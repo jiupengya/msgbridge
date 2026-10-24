@@ -138,8 +138,9 @@ public partial class App : System.Windows.Application
         // 看完历史消息从托盘右键「打开 Message」或双击托盘图标打开。
         ApplySilentStartup();
 
-        // 调试用：启动后自动弹一次快照面板（托盘图标在溢出区时无法用自动化点击）
-        if (Environment.GetEnvironmentVariable("MSGBRIDGE_SHOW_SNAPSHOT") == "1")
+        // 调试用：带 --snapshot 启动时自动弹一次快照面板
+        // （托盘图标经常被收进溢出区，自动化测试点不到）
+        if (e.Args.Any(a => string.Equals(a, "--snapshot", StringComparison.OrdinalIgnoreCase)))
         {
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
             t.Tick += (_, _) =>
