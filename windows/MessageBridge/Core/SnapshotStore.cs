@@ -18,11 +18,22 @@ public sealed class NotificationUpdate
     public bool IsSync { get; init; }
     /// <summary>常驻通知（cancelAllNotifications 清不掉，清空后仍留在快照里）。</summary>
     public bool IsOngoing { get; init; }
-    public string Source { get; init; } = "";
+
+    /// <summary>
+    /// 来源显示名。连接后批量补发时手机端偶尔拿不到应用名，会退化成包名，
+    /// 这时由电脑端用之前正常推送时记住的「包名 → 应用名」补全（所以可写）。
+    /// </summary>
+    public string Source { get; set; } = "";
+
     public string Title { get; init; } = "";
     public string Content { get; init; } = "";
     public long Time { get; init; }
-    public string IconBase64 { get; init; } = "";
+
+    /// <summary>原始 base64 图标；补发时可能为空，电脑端会退回上次记住的图标文件。</summary>
+    public string IconBase64 { get; set; } = "";
+
+    /// <summary>应用包名，用来查「包名 → 应用名/图标」的缓存。</summary>
+    public string PackageName { get; init; } = "";
 }
 
 /// <summary>快照面板里的一条「手机当前存活通知」。</summary>
@@ -79,7 +90,10 @@ public sealed class SnapshotStore
     public int Count => _index.Count;
 
     /// <summary>新增或更新一条通知（同 key 就地更新，不改变列表位置）。</summary>
-    public void Upsert(NotificationUpdate update, Services.IconStore icons)
+    /// <param name="fallbackIconFile">
+    /// 补发包里没带图标时用的兜底图标文件名（电脑端按包名记下的上次图标）。
+    /// </param>
+    public void Upsert(NotificationUpdate update, Services.IconStore icons, string? fallbackIconFile = null)
     {
         if (string.IsNullOrEmpty(update.Key)) return;
 
@@ -102,7 +116,7 @@ public sealed class SnapshotStore
             update.Time > 0 ? update.Time : DateTimeOffset.Now.ToUnixTimeMilliseconds())
             .ToLocalTime().ToString("HH:mm:ss");
 
-        // 更新包通常也会带图标；没带就沿用上一次的
+        // 更新包通常也会带图标；没带就沿用上一次的，再不行用兜底图标
         if (!string.IsNullOrEmpty(update.IconBase64))
         {
             var file = icons.Save(update.IconBase64);
@@ -111,6 +125,11 @@ public sealed class SnapshotStore
                 item.IconFile = file;
                 item.IconImage = Services.IconStore.LoadBitmap(icons.PathOf(file));
             }
+        }
+        else if (item.IconImage == null && !string.IsNullOrEmpty(fallbackIconFile))
+        {
+            item.IconFile = fallbackIconFile;
+            item.IconImage = Services.IconStore.LoadBitmap(icons.PathOf(fallbackIconFile));
         }
 
         Changed?.Invoke();

@@ -147,7 +147,8 @@ public partial class App : Application
         _tray = new Tray();
         // 托盘事件在托盘自己的 STA 线程上触发，统一转回 UI 线程再动窗口
         _tray.OpenRequested += () => Ui.TryEnqueue(ShowMainWindow);
-        _tray.SnapshotRequested += () => Ui.TryEnqueue(ShowSnapshotPanel);
+        // 左键是开关：面板已经显示时再点一次就收起
+        _tray.SnapshotRequested += () => Ui.TryEnqueue(ToggleSnapshotPanel);
         _tray.ExitRequested += () => Ui.TryEnqueue(OnTrayExit);
         _tray.PauseToggleRequested += () => Ui.TryEnqueue(OnPauseToggle);
         _tray.StartupToggleRequested += () => Ui.TryEnqueue(OnStartupToggle);
@@ -175,6 +176,10 @@ public partial class App : Application
         // 静默启动：默认不显示主窗口，只常驻托盘。
         // 看完历史消息从托盘右键「打开 Message」或双击托盘图标打开。
         ApplySilentStartup();
+
+        // 快照面板提前建好并离屏预热一次，之后弹出才不会抢焦点，也不会因为首次布局慢而闪
+        EnsureSnapshotWindow();
+        _snapshotWindow?.Prewarm();
 
         // 调试用：带 --snapshot 启动时自动弹一次快照面板
         // （托盘图标经常被收进溢出区，自动化测试点不到）
@@ -279,17 +284,26 @@ public partial class App : Application
 
     private void ShowSnapshotPanel()
     {
-        if (_snapshot == null) return;
-        if (_snapshotWindow == null)
-        {
-            _snapshotWindow = new SnapshotWindow(_snapshot, _mainWindow);
-            _snapshotWindow.ToastSwitchToggled += SetWindowsToast;
-            _snapshotWindow.InterruptionFilterToggled += OnLocalDndToggle;
-            _snapshotWindow.ClearRequested += OnClearPhoneNotifications;
-        }
-
+        EnsureSnapshotWindow();
         RefreshSnapshotPanel();
-        _snapshotWindow.ShowAtTray();
+        _snapshotWindow?.ShowAtTray();
+    }
+
+    /// <summary>托盘左键：显示中则收起，否则弹出。</summary>
+    private void ToggleSnapshotPanel()
+    {
+        EnsureSnapshotWindow();
+        RefreshSnapshotPanel();
+        _snapshotWindow?.Toggle();
+    }
+
+    private void EnsureSnapshotWindow()
+    {
+        if (_snapshot == null || _snapshotWindow != null) return;
+        _snapshotWindow = new SnapshotWindow(_snapshot, _mainWindow);
+        _snapshotWindow.ToastSwitchToggled += SetWindowsToast;
+        _snapshotWindow.InterruptionFilterToggled += OnLocalDndToggle;
+        _snapshotWindow.ClearRequested += OnClearPhoneNotifications;
     }
 
     private void RefreshSnapshotPanel()
@@ -301,15 +315,53 @@ public partial class App : Application
             _canSetDnd);
     }
 
+    /// <summary>
+    /// 包名 → (应用显示名, 图标文件名)。
+    /// 连接后的批量补发里，手机端偶尔只能给出包名、也不带图标（旧通知的 Icon 取不到），
+    /// 这里用之前正常推送时记下的信息补全，让快照面板和主界面看起来一致。
+    /// </summary>
+    private readonly Dictionary<string, (string Name, string IconFile)> _appInfo =
+        new(StringComparer.Ordinal);
+
     private void OnNotificationChanged(NotificationUpdate update)
     {
         Ui.TryEnqueue(() =>
         {
             if (_snapshot == null || _icons == null) return;
+
+            string? fallbackIcon = null;
+            if (!string.IsNullOrEmpty(update.PackageName))
+            {
+                if (!update.IsSync)
+                {
+                    // 正常推送：顺手更新缓存
+                    var file = _icons.Save(update.IconBase64);
+                    if (!string.IsNullOrEmpty(update.Source))
+                    {
+                        if (!string.IsNullOrEmpty(file))
+                            _appInfo[update.PackageName] = (update.Source, file);
+                        else if (_appInfo.TryGetValue(update.PackageName, out var old))
+                            _appInfo[update.PackageName] = (update.Source, old.IconFile);
+                    }
+                }
+                else if (_appInfo.TryGetValue(update.PackageName, out var info))
+                {
+                    // 补发：名称退化成包名时换成应用名，图标缺失时用缓存图标
+                    if (string.IsNullOrEmpty(update.Source) || update.Source == update.PackageName)
+                        update.Source = info.Name;
+                    fallbackIcon = info.IconFile;
+                }
+            }
+
             if (update.IsCancel)
                 _snapshot.Remove(update.Key);
             else
-                _snapshot.Upsert(update, _icons);
+                _snapshot.Upsert(update, _icons, fallbackIcon);
+
+            // 排查「快照里没图标」：sync 包到底带没带 icon
+            DiagnosticLog(
+                $"snapshot key={update.Key} pkg='{update.PackageName}' src='{update.Source}' " +
+                $"sync={update.IsSync} iconLen={update.IconBase64.Length} fallback='{fallbackIcon}'");
         });
     }
 
@@ -535,9 +587,26 @@ public partial class App : Application
         }
     }
 
-    /// <summary>把未处理异常写进 logs/crash.log，方便事后定位。</summary>
-    private static void CrashLog(Exception? ex)
+    /// <summary>临时诊断日志（排查快照图标用，稳定后可以删）。</summary>
+    private static void DiagnosticLog(string message)
     {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MessageBridge", "logs");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "diagnostic.log"),
+                $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // 忽略
+        }
+    }
+
+    /// <summary>把未处理异常写进 logs/crash.log，方便事后定位。</summary>
+    private static void CrashLog(Exception? ex)    {
         try
         {
             var dir = Path.Combine(

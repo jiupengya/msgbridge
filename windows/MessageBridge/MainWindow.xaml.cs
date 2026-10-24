@@ -70,7 +70,10 @@ public sealed partial class MainWindow : Window
         var scale = Services.WindowScale.For(this);
         var width = Services.WindowScale.Px(DesignWidth, scale);
         var height = Services.WindowScale.Px(DesignHeight, scale);
+
+        // DisplayArea.WorkArea 已经是物理像素，和 SetWindowPos 同一套单位
         var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
+
         Services.WindowScale.SetBounds(this,
             area.X + (area.Width - width) / 2,
             area.Y + (area.Height - height) / 2,

@@ -222,6 +222,7 @@ public sealed class MessageRouter
             IsOngoing = body["isOngoing"]?.GetValue<bool>() ?? false,
             Source = body["appName"]?.GetValue<string>()
                      ?? body["packageName"]?.GetValue<string>() ?? "未知应用",
+            PackageName = body["packageName"]?.GetValue<string>() ?? "",
             Title = body["title"]?.GetValue<string>() ?? "",
             Content = body["text"]?.GetValue<string>() ?? "",
             Time = body["time"]?.GetValue<long>() ?? 0,

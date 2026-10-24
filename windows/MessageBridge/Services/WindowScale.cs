@@ -22,8 +22,13 @@ public static class WindowScale
     private static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
+    /// <summary>SW_SHOWNOACTIVATE：显示但不激活，不抢前台焦点。</summary>
+    private const int SwShowNoActivate = 4;
 
     public static double For(Window window)
     {
@@ -44,6 +49,23 @@ public static class WindowScale
 
     public static int Px(double dip, double scale)
         => (int)Math.Round(dip * scale);
+
+    /// <summary>
+    /// 显示窗口但不抢焦点。托盘弹出的小面板必须这样显示，
+    /// 否则会把全屏游戏/其他窗口的焦点抢走（切出一次很烦人）。
+    /// </summary>
+    public static void ShowNoActivate(Window window)
+    {
+        try
+        {
+            var hwnd = Microsoft.UI.Win32Interop.GetWindowFromWindowId(window.AppWindow.Id);
+            ShowWindow(hwnd, SwShowNoActivate);
+        }
+        catch (Exception ex)
+        {
+            Log($"ShowNoActivate failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     /// <summary>按物理像素摆放窗口（不做任何缩放换算）。</summary>
     public static bool SetBounds(Window window, int x, int y, int width, int height)
