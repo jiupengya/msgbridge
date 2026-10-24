@@ -361,24 +361,30 @@ class NotificationListener : NotificationListenerService() {
     // ---------- 图标提取（完整移植 NotificationsPlugin.extractIcon） ----------
 
     private fun extractIcon(sbn: StatusBarNotification, notification: Notification): Bitmap? {
-        return try {
+        // 第一段：通知自带的大图标 / 小图标（最准，能反映应用当前的图标状态）
+        try {
             val foreignContext = createPackageContext(sbn.packageName, 0)
-            if (notification.getLargeIcon() != null) {
-                return iconToBitmap(foreignContext, notification.getLargeIcon())
+            notification.getLargeIcon()?.let { icon ->
+                iconToBitmap(foreignContext, icon)?.let { return it }
             }
-            if (notification.getSmallIcon() != null) {
-                return iconToBitmap(foreignContext, notification.getSmallIcon())
+            notification.getSmallIcon()?.let { icon ->
+                iconToBitmap(foreignContext, icon)?.let { return it }
             }
-            // 兜底：应用图标
-            val foreignResources = packageManager.getResourcesForApplication(sbn.packageName)
-            val foreignIcon = foreignResources.getDrawable(notification.icon)
-            drawableToBitmap(foreignIcon)
-        } catch (e: PackageManager.NameNotFoundException) {
-            Log.w(TAG, "icon: package not found", e)
-            null
         } catch (e: Exception) {
-            null
+            // 旧通知的 Icon 对象可能已经失效，正常现象，往下走兜底
+            Log.w(TAG, "icon: notification icon failed for ${sbn.packageName}", e)
         }
+
+        // 第二段：应用图标兜底。
+        // 连接后批量补发时，通知里挂了一段时间的 Icon 经常取不到（尤其会话类通知），
+        // 少了这步快照面板上就只剩个灰方块 —— 主界面有图标、面板没有，就是这个原因。
+        try {
+            return drawableToBitmap(packageManager.getApplicationIcon(sbn.packageName))
+        } catch (e: Exception) {
+            Log.w(TAG, "icon: app icon failed for ${sbn.packageName}", e)
+        }
+
+        return null
     }
 
     private fun iconToBitmap(foreignContext: Context?, icon: Icon?): Bitmap? {

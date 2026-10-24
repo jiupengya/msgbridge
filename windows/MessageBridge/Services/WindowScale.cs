@@ -25,6 +25,13 @@ public static class WindowScale
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [DllImport("user32.dll")]
+    private static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateRoundRectRgn(
+        int left, int top, int right, int bottom, int widthEllipse, int heightEllipse);
+
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
     /// <summary>SW_SHOWNOACTIVATE：显示但不激活，不抢前台焦点。</summary>
@@ -64,6 +71,36 @@ public static class WindowScale
         catch (Exception ex)
         {
             Log($"ShowNoActivate failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 把窗口裁成圆角。
+    ///
+    /// WinUI 3 的无边框窗口（SetBorderAndTitleBar(false,false) 之后是 WS_POPUP）拿不到
+    /// DWM 的自动圆角，XAML 里的 CornerRadius 只影响内容，窗口矩形本身还在，
+    /// 圆角外露出的是窗口的默认白底 —— 这就是快照面板那圈明显的白边。
+    /// 用 SetWindowRgn 直接把窗口形状改成圆角矩形，圆角外就真的不存在了。
+    /// </summary>
+    public static void ApplyRoundCorners(Window window, int radiusPx)
+    {
+        try
+        {
+            var hwnd = Microsoft.UI.Win32Interop.GetWindowFromWindowId(window.AppWindow.Id);
+            var size = window.AppWindow.Size;
+            if (size.Width <= 0 || size.Height <= 0) return;
+
+            // 区域比窗口再内缩 1px：Win11 会给窗口边缘画一条 1px 的亮边，
+            // 内缩之后连同那条亮边一起被裁掉，肉眼看就是干净的圆角。
+            var rgn = CreateRoundRectRgn(1, 1, size.Width, size.Height,
+                radiusPx * 2, radiusPx * 2);
+            if (rgn == IntPtr.Zero) return;
+            // 区域交给系统接管，不需要（也不能）自己 DeleteObject
+            SetWindowRgn(hwnd, rgn, true);
+        }
+        catch (Exception ex)
+        {
+            Log($"ApplyRoundCorners failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

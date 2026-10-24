@@ -18,7 +18,7 @@ namespace MessageBridge;
 /// </summary>
 public sealed partial class SnapshotWindow : Window
 {
-    private const int DesignWidth = 320;
+    private const int DesignWidth = 360;
     /// <summary>最大高度：通知再多就滚动。</summary>
     private const int MaxDesignHeight = 520;
     /// <summary>标题 + 开关行 + 底栏这些固定部分占的高度。</summary>
@@ -91,10 +91,16 @@ public sealed partial class SnapshotWindow : Window
             var pref = DwmWindowCornerPreference.Round;
             DwmSetWindowAttribute(hwnd, DwmWindowAttribute.WindowCornerPreference,
                 ref pref, Marshal.SizeOf<DwmWindowCornerPreference>());
+
+            // Win11 会给每个窗口画 1px 边框（默认浅色）。深色面板上那圈就是所谓的「白边」，
+            // 用 DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE 关掉它。
+            var noBorder = DwmColorNone;
+            DwmSetWindowAttribute(hwnd, DwmWindowAttribute.BorderColor,
+                ref noBorder, Marshal.SizeOf<uint>());
         }
         catch
         {
-            // 圆角是锦上添花，失败就保持直角
+            // 圆角/边框是锦上添花，失败就保持默认
         }
     }
 
@@ -258,6 +264,8 @@ public sealed partial class SnapshotWindow : Window
         var y = area.Y + area.Height - height - Services.WindowScale.Px(12, scale);
 
         Services.WindowScale.SetBounds(this, x, y, width, height);
+        // 无边框窗口拿不到 DWM 圆角，必须自己把窗口形状裁成圆角，否则圆角外会露出一圈白底
+        Services.WindowScale.ApplyRoundCorners(this, Services.WindowScale.Px(8, scale));
         _sized = true;
     }
 
@@ -320,7 +328,8 @@ public sealed partial class SnapshotWindow : Window
 
     private enum DwmWindowAttribute
     {
-        WindowCornerPreference = 33
+        WindowCornerPreference = 33,
+        BorderColor = 34
     }
 
     private enum DwmWindowCornerPreference
@@ -328,9 +337,16 @@ public sealed partial class SnapshotWindow : Window
         Round = 2
     }
 
+    /// <summary>DWMWA_COLOR_NONE：让 DWM 不画那圈 1px 窗口边框。</summary>
+    private const uint DwmColorNone = 0xFFFFFFFF;
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(
         IntPtr hwnd, DwmWindowAttribute attribute, ref DwmWindowCornerPreference value, int size);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr hwnd, DwmWindowAttribute attribute, ref uint value, int size);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT

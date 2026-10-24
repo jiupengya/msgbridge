@@ -6,13 +6,11 @@
     xmlns:core="using:MessageBridge.Core">
 
     <!--
-      无边框窗口：圆角靠 DWM 裁，背景交给 Mica。
-      面板弹出时会抢焦点（用户点托盘就是要在面板上操作），有焦点时 Mica 正常显示；
-      点到别处窗口失焦就收起了，所以也看不到「无焦点的 Mica」。
+      无边框窗口：圆角靠 SetWindowRgn 裁（见 WindowScale.ApplyRoundCorners），背景交给 Mica。
+      不要加 BorderThickness/BorderBrush：深色主题下 SurfaceStrokeColor 是半透明白，
+      在 150% 缩放下就是那圈很扎眼的「白边」。
     -->
-    <Border BorderThickness="1" CornerRadius="8"
-            BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}"
-            Background="Transparent">
+    <Border CornerRadius="8" Background="Transparent">
 
         <Grid x:Name="Root">
             <Grid.KeyboardAccelerators>
