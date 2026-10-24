@@ -49,6 +49,13 @@ public sealed class SnapshotItem : INotifyPropertyChanged
     private string _title = "";
     public string Title { get => _title; set => Set(ref _title, value); }
 
+    /// <summary>
+    /// 列表第一行：「来源 · 标题」。标题为空时只显示来源。
+    /// 面板窄，把两行合成一行后每条通知只占两行，一屏能多看几条。
+    /// </summary>
+    public string HeaderText =>
+        string.IsNullOrWhiteSpace(_title) ? _source : $"{_source} · {_title}";
+
     private string _content = "";
     public string Content { get => _content; set => Set(ref _content, value); }
 
@@ -68,6 +75,10 @@ public sealed class SnapshotItem : INotifyPropertyChanged
         if (EqualityComparer<T>.Default.Equals(field, value)) return;
         field = value;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+        // 来源或标题变了，合并出来的第一行也要跟着刷新
+        if (name is nameof(Source) or nameof(Title))
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HeaderText)));
     }
 }
 

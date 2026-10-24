@@ -95,12 +95,9 @@
                                            Width="40" Height="40" Stretch="UniformToFill" />
                                 </Border>
 
-                                <StackPanel Grid.Column="1" Spacing="1">
-                                    <TextBlock Text="{x:Bind Source, Mode=OneWay}"
+                                <StackPanel Grid.Column="1" Spacing="2">
+                                    <TextBlock Text="{x:Bind HeaderText, Mode=OneWay}"
                                                Style="{StaticResource ItemTitleStyle}" />
-                                    <TextBlock Text="{x:Bind Title, Mode=OneWay}"
-                                               Style="{StaticResource ItemBodyStyle}"
-                                               Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
                                     <TextBlock Text="{x:Bind Content, Mode=OneWay}"
                                                Style="{StaticResource ItemBodyStyle}"
                                                TextWrapping="Wrap" TextTrimming="None" MaxLines="2" />
