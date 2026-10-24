@@ -3,7 +3,7 @@
 将**安卓手机的通知实时推送到 Windows 电脑**的双端项目，实现方式参考本目录下的 KDE Connect（`kdeconnect-android` / `kdeconnect-kde`）。
 
 - 安卓端：Kotlin + Jetpack Compose，界面使用 **Miuix**（小米 HyperOS 风格组件库）
-- Windows 端：C# / WPF，托盘常驻（静默启动）+ 系统通知气泡 + 实时快照面板 + 历史消息窗口
+- Windows 端：C# / **WinUI 3**，Fluent 风格界面（Mica 背景 + 自定义标题栏），托盘常驻（静默启动）+ 系统通知气泡 + 实时快照面板 + 历史消息窗口
 - 连接方式：局域网 TCP 长连接，**手动填写电脑 IP + PIN 码配对**（简化版，无需自动发现与证书体系）
 
 ## 目录结构
@@ -19,18 +19,21 @@ msgbridge/
 │       │   ├── service/          # 前台保活服务、通知监听、开机自启
 │       │   └── ui/               # Miuix 风格主界面（状态/配对/设置/权限）
 │       └── res/                  # 图标、主题、字符串
-└── windows/                      # Windows 端（.NET 8 WPF 工程）
+└── windows/                      # Windows 端（.NET 8 WinUI 3 工程）
     ├── MessageBridge.sln
     ├── MessageBridge/
     │   ├── App.xaml(.cs)         # 启动、托盘、事件调度、两个开关的真相源
-    │   ├── MainWindow.xaml(.cs)  # 历史消息列表窗口（读 messages.json）
-    │   ├── SnapshotWindow.xaml(.cs) # 托盘左键的快照面板（内存数据，断连即清）
+    │   ├── MainWindow.xaml(.cs)  # 历史消息窗口（Mica + 自定义标题栏）
+    │   ├── SnapshotWindow.xaml(.cs) # 托盘左键的快照面板（无边框置顶，断连即清）
     │   ├── PairWindow.xaml(.cs)  # 配对弹窗（显示 PIN）
     │   ├── Core/                 # 协议、TCP 服务端、信任存储、消息存储、快照存储
-    │   ├── Services/Tray.cs      # 托盘 + 系统气泡 + 暂停推送/开机自启菜单
+    │   ├── Services/Tray.cs      # 托盘图标（WinForms NotifyIcon，跟随系统主题换线条色）
+    │   ├── Services/WindowScale.cs # 窗口 DPI 换算（逻辑像素 ↔ 物理像素）
     │   ├── Services/IconStore.cs # 图标落盘（JSON 只存文件名）
     │   ├── Services/ToastBridge.cs # 系统通知（合并/静默/方形图标）
-    │   └── Resources/msgicon.ico
+    │   ├── NoVsAppx.targets      # 没有 Visual Studio 时绕开 MSIX 打包任务的补丁
+    │   └── Resources/            # msgicon.ico（应用图标）+ tray_dark/light.ico（托盘线条图标）
+    ├── tools/make_tray_icons.py  # 生成纯色线条托盘图标（Pillow）
     ├── NuGet.Config              # 项目级源配置（清除机器上失效的本地源）
     └── smoke_test.py             # 协议冒烟测试脚本（模拟手机端）
 ```
@@ -109,7 +112,7 @@ msgbridge/
 | 勿扰联动 | 暂停推送 | 不拦截推送；勿扰开关两端互相控制，状态双向同步 |
 | 设备发现 | UDP 广播 + 证书 | 手动 IP |
 | 配对加密 | TLS + 双向证书 | PIN 一次性验证（局域网自用） |
-| 桌面端 | KDE Plasma 插件体系 | WPF 托盘应用 + 实时快照面板 |
+| 桌面端 | KDE Plasma 插件体系 | WinUI 3 托盘应用 + 实时快照面板 |
 
 ## 两个独立开关
 
@@ -138,15 +141,27 @@ msgbridge/
 
 ### Windows 端
 
-需要 [.NET SDK 8+](https://dotnet.microsoft.com/download)。
+需要 [.NET SDK 8+](https://dotnet.microsoft.com/download) 和 **Windows App Runtime 1.7**（微软商店装「Windows App Runtime 1.7」或从 [aka.ms/windowsappsdk](https://aka.ms/windowsappsdk/1.7/latest/windowsappruntimeinstall-x64.exe) 安装）。
 
 ```powershell
 cd windows
 dotnet build MessageBridge.sln -c Debug
-# 产物：windows\MessageBridge\bin\Debug\net8.0-windows\MessageBridge.exe
+# 产物：windows\MessageBridge\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MessageBridge.exe
 ```
 
 > `NuGet.Config` 已配置为仅使用 nuget.org，并清除机器上可能失效的本地源/回退文件夹。
+
+关于 WinUI 3 的两个构建注意点：
+
+- **不需要 Visual Studio**。机器的 `dotnet` SDK 里没有 MSIX 打包用的 MSBuild 任务（`Microsoft.Build.AppxPackage.dll` 等），Windows App SDK 的 `MrtCore.PriGen.targets` 会因此直接报 `MSB4062`。项目用 `NoVsAppx.targets` 把纯打包相关的 Target 覆盖成空实现绕过去，再由构建后步骤用 `makepri.exe`（来自 `Microsoft.Windows.SDK.BuildTools` NuGet 包）生成应用自己的 `resources.pri`——缺了它 WinUI 启动会 `0xC000027B` 崩在 `Microsoft.UI.Xaml.dll`。
+- **框架依赖模式**（`WindowsAppSDKSelfContained=false`）。自包含模式会把 300 多个运行时 DLL 拷到输出目录，但在这台机器上会和系统里已装的 Windows App Runtime 打架，同样 `0xC000027B` 启动崩溃。所以目标机器必须装 Windows App Runtime 1.7。
+
+换托盘图标的线条样式：
+
+```powershell
+cd windows\tools
+python make_tray_icons.py   # 重新生成 Resources/tray_dark.ico 与 tray_light.ico
+```
 
 ### 安卓端
 
@@ -193,6 +208,9 @@ cd android
 - 快照面板：实测实时新增/更新、`isCancel` 移除、断连清空、重连批量补发；`清空手机通知` 后快照清空。
 - 两个开关：电脑面板拨动 → `config.json` 落盘 + 手机收到 `state.windowsToast`；手机拨动 → 电脑 `config.json` 同步更新；面板拨动勿扰 → 手机 `zen_mode` 0↔2 切换并回传 `state.interruptionFilter`。
 - 气泡开关关闭时，通知仍写入 `messages.json` 历史，只是不弹 Toast。
+- WinUI 3 界面：无 Visual Studio 的 `dotnet build` 构建通过（`resources.pri` 由构建后步骤生成）；主窗口 Mica 背景 + 自定义标题栏、快照面板无边框置顶、失焦自动收起均已实测；`AppWindow.Closing` 拦下关闭请求后窗口隐藏、进程继续常驻，再次启动 exe 会通过门铃把窗口唤出。
+- 窗口尺寸：150% 缩放的屏幕上按 `GetDpiForWindow` 换算物理像素，主窗口 940×640 DIP、快照面板 390×520 DIP 与设计稿一致（`AppWindow.MoveAndResize` 在这台机器上会多除一次缩放系数，故改用 `SetWindowPos`）。
+- 托盘图标：纯色线条样式，`SystemUsesLightTheme=0`（深色任务栏）时用 `tray_light.ico`，浅色任务栏时用 `tray_dark.ico`，切换系统主题会实时换图。
 
 ## 数据存放（Windows）
 

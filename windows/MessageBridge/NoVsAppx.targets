@@ -1,0 +1,68 @@
+<Project>
+  <!--
+    没有装 Visual Studio 的机器上，dotnet SDK 里没有 MSIX 打包用的这两个 MSBuild 任务程序集：
+      Microsoft.Build.AppxPackage.dll
+      Microsoft.Build.Packaging.Pri.Tasks.dll
+    它们只随 VS 的「MSIX 打包工具」组件安装。Windows App SDK 的 MrtCore.PriGen.targets
+    会无条件加载它们，于是 dotnet build 直接报 MSB4062。
+
+    本应用是 unpackaged 的（WindowsPackageType=None），根本不打 MSIX 包，
+    所以把纯打包相关、且会调用上面两个 DLL 的 Target 覆盖成纯 MSBuild 或空实现。
+    覆盖顺序：在 csproj 里用显式 Sdk 导入，最后再 Import 本文件（见 MessageBridge.csproj）。
+
+    应用自己的 resources.pri 由 tools/make_app_pri.ps1 在构建后单独生成。
+  -->
+  <Target Name="GetMrtPackagingOutputs" Returns="@(PackagingOutputs)" />
+
+  <Target Name="CopyLocalFilesOutputGroup" Returns="@(CopyLocalFilesOutputGroupOutput)">
+    <ItemGroup>
+      <CopyLocalFilesOutputGroupOutput Include="@(ReferenceCopyLocalPaths)"
+                                      Condition="'%(ReferenceCopyLocalPaths.Extension)' != '.xml' or '$(AppxCopyLocalFilesOutputGroupIncludeXmlFiles)' == 'true'">
+        <TargetPath>%(ReferenceCopyLocalPaths.DestinationSubDirectory)%(ReferenceCopyLocalPaths.Filename)%(ReferenceCopyLocalPaths.Extension)</TargetPath>
+      </CopyLocalFilesOutputGroupOutput>
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_GetPackageArchitecture" Returns="@(_PackageArchitecture)" />
+  <Target Name="_GetDefaultResourceLanguage" Returns="@(_DefaultResourceLanguage)" />
+  <Target Name="_ValidateConfiguration" />
+
+  <Target Name="_GeneratePrisForPortableLibraries" />
+  <Target Name="_GetPriFilesFromPayload" />
+  <Target Name="_ExpandPriFiles" />
+  <Target Name="_ExpandProjectPriFile" />
+  <Target Name="AddPriPayloadFilesToCopyToOutputDirectoryItems" />
+
+  <!-- 让 MakePriExeFullPath 保持为空：所有依赖它的 Condition 都会自动跳过 -->
+  <Target Name="_GetSdkToolsPathsFromSdk" />
+
+  <!-- 不用 VS 的 GenerateProjectPriFile 任务，改由构建后脚本用 makepri.exe 生成 -->
+  <Target Name="_GenerateProjectPriFileCore" />
+
+  <!--
+    自己没有 pri 的话 WinUI 启动会 0xC000027B 崩在 Microsoft.UI.Xaml.dll 里，
+    这里用 Windows SDK BuildTools 自带的 makepri.exe 生成一个最小索引（只索引本的 .xbf）。
+  -->
+  <Target Name="GenerateAppPriFile" AfterTargets="Build">
+    <PropertyGroup>
+      <_MakePriExe Condition="'$(_MakePriExe)' == ''">$(NuGetPackageRoot)microsoft.windows.sdk.buildtools\10.0.26100.1742\bin\10.0.26100.0\x64\makepri.exe</_MakePriExe>
+      <!-- makepri 不认相对路径，统一转绝对 -->
+      <_PriOutDir>$([System.IO.Path]::GetFullPath('$(OutDir)'))</_PriOutDir>
+      <_PriRootDir>$(_PriOutDir)pri_root</_PriRootDir>
+      <_PriConfigPath>$(_PriOutDir)priconfig.xml</_PriConfigPath>
+      <_PriTargetPath>$(_PriOutDir)resources.pri</_PriTargetPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <_PriInputFiles Include="$(OutDir)*.xbf" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(_PriRootDir)" Condition="Exists('$(_MakePriExe)')" />
+    <Copy SourceFiles="@(_PriInputFiles)" DestinationFolder="$(_PriRootDir)"
+          Condition="Exists('$(_MakePriExe)')" ContinueOnError="true" />
+    <Exec Command="&quot;$(_MakePriExe)&quot; createconfig /cf &quot;$(_PriConfigPath)&quot; /dq en-US /o"
+          Condition="Exists('$(_MakePriExe)')" ContinueOnError="true" StandardOutputImportance="low" />
+    <Exec Command="&quot;$(_MakePriExe)&quot; new /pr &quot;$(_PriRootDir)&quot; /cf &quot;$(_PriConfigPath)&quot; /of &quot;$(_PriTargetPath)&quot; /in $(AssemblyName) /o"
+          Condition="Exists('$(_MakePriExe)')" ContinueOnError="true" StandardOutputImportance="low" />
+  </Target>
+</Project>

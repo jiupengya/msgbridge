@@ -3,8 +3,8 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
-using System.Windows.Media.Imaging;
-using System.Windows.Threading;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Media;
 using MessageBridge.Services;
 
 namespace MessageBridge.Core;
@@ -38,7 +38,7 @@ public sealed class MessageItem
     [JsonIgnore]
     public string IconBase64 { get; set; } = "";
 
-    private BitmapImage? _iconImage;
+    private ImageSource? _iconImage;
     private bool _iconLoaded;
 
     public string TypeText => "通知";
@@ -51,7 +51,7 @@ public sealed class MessageItem
     /// 之前每次访问都重新 base64 解码 + 新建 BitmapImage，列表滚动一次就重复解码一次。
     /// </summary>
     [JsonIgnore]
-    public BitmapImage? IconImage
+    public ImageSource? IconImage
     {
         get
         {
@@ -71,7 +71,7 @@ public sealed class MessageItem
         _iconImage = null;
     }
 
-    private static BitmapImage? LoadIcon(string path) => IconStore.LoadBitmap(path);
+    private static ImageSource? LoadIcon(string path) => IconStore.LoadBitmap(path);
 
     public static MessageItem FromNotification(JsonObject body)
     {
@@ -99,7 +99,7 @@ public sealed class MessageStore
 
     private readonly string _path;
     private readonly IconStore _icons;
-    private DispatcherTimer? _saveTimer;
+    private DispatcherQueueTimer? _saveTimer;
     private bool _dirty;
 
     /// <summary>
@@ -203,8 +203,8 @@ public sealed class MessageStore
     private void ScheduleSave()
     {
         _dirty = true;
-        var dispatcher = System.Windows.Application.Current?.Dispatcher;
-        if (dispatcher == null)
+        var queue = App.Ui;
+        if (queue == null)
         {
             Save();
             return;
@@ -212,15 +212,10 @@ public sealed class MessageStore
 
         if (_saveTimer == null)
         {
-            _saveTimer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
-            {
-                Interval = TimeSpan.FromMilliseconds(600)
-            };
-            _saveTimer.Tick += (_, _) =>
-            {
-                _saveTimer?.Stop();
-                Save();
-            };
+            _saveTimer = queue.CreateTimer();
+            _saveTimer.Interval = TimeSpan.FromMilliseconds(600);
+            _saveTimer.IsRepeating = false;
+            _saveTimer.Tick += (_, _) => Save();
         }
         _saveTimer.Stop();
         _saveTimer.Start();

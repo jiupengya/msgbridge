@@ -1,22 +1,67 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project>
+  <!--
+    显式导入 SDK：目的是把 NoVsAppx.targets 放在 SDK / NuGet 的 targets 之后导入，
+    这样同名 Target 的后定义才会覆盖掉 Windows App SDK 里那些需要 Visual Studio 的打包 Target。
+    见 NoVsAppx.targets 里的说明。
+  -->
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
-    <UseWPF>true</UseWPF>
-    <UseWindowsForms>true</UseWindowsForms>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <AssemblyName>MessageBridge</AssemblyName>
     <RootNamespace>MessageBridge</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Platforms>AnyCPU</Platforms>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
     <Version>1.0.0</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <!-- WinUI 3 -->
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- 本机装了 Windows App Runtime 1.7，走框架依赖模式；
+         自包含模式（把 300 个运行时 DLL 拷到输出目录）在这台机器上会和系统里的
+         Microsoft.UI.Xaml 打架，启动直接 0xc000027b 崩溃，实测不可用。 -->
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+
+    <!-- 没有 VS 就没有 MSIX 的 PRI 打包任务，资源 PRI 由 NoVsAppx.targets 处理 -->
+    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
+
+    <!-- 托盘图标用 WinForms 的 NotifyIcon（WinUI 3 没有原生托盘 API）。
+         注意必须显式关掉 WPF，否则 WindowsDesktop SDK 会把 .xaml 当成 WPF 的 Page 去编译。 -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>false</UseWPF>
+    <!-- WFAC010：WinForms 建议把 DPI 配置从 manifest 挪到 ApplicationHighDpiMode，
+         但 WinUI 3 必须靠 manifest 声明 PerMonitorV2，这里保留 manifest 并关掉该警告。 -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+    <!-- 光 UseWPF=false 还不够：WindowsDesktop SDK 照样会导入 Microsoft.WinFX.targets，
+         它的 MarkupCompilePass1 会抢在 WinUI 的 XAML 编译器前面，把 Page 项当 WPF 页面编译。
+         这个开关让 WinFX.targets 整个不被导入。 -->
+    <ImportFrameworkWinFXTargets>true</ImportFrameworkWinFXTargets>
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="Resources\msgicon.ico" />
+    <!-- WinForms 的隐式 using 会和 WinUI 的 Application / Button 等名字撞车，去掉它，
+         需要 WinForms 的文件各自显式 using。 -->
+    <Using Remove="System.Windows.Forms" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.260224002" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 托盘图标在运行时按主题挑选，必须复制到输出目录 -->
+    <Content Include="Resources\tray_dark.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Resources\tray_light.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Resources\msgicon.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+  <Import Project="NoVsAppx.targets" />
 </Project>

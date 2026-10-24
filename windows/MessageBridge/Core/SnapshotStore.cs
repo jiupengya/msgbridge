@@ -1,7 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Windows.Media.Imaging;
+using Microsoft.UI.Xaml.Media;
 
 namespace MessageBridge.Core;
 
@@ -44,8 +44,8 @@ public sealed class SnapshotItem : INotifyPropertyChanged
     private string _timeText = "";
     public string TimeText { get => _timeText; set => Set(ref _timeText, value); }
 
-    private BitmapImage? _iconImage;
-    public BitmapImage? IconImage { get => _iconImage; set => Set(ref _iconImage, value); }
+    private ImageSource? _iconImage;
+    public ImageSource? IconImage { get => _iconImage; set => Set(ref _iconImage, value); }
 
     /// <summary>图标文件名（icons 目录下），给 MessageStore 的裁剪逻辑保留用。</summary>
     public string IconFile { get; set; } = "";

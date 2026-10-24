@@ -1,14 +1,22 @@
 using System.IO;
 using System.Text.Json;
-using System.Windows;
-using System.Windows.Threading;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 using MessageBridge.Core;
 using MessageBridge.Services;
 
 namespace MessageBridge;
 
-public partial class App : System.Windows.Application
+public partial class App : Application
 {
+    /// <summary>
+    /// UI 线程调度器。WinUI 3 没有 WPF 的 Dispatcher，后台线程回调统一走这里。
+    /// </summary>
+    public static DispatcherQueue Ui { get; private set; } = null!;
+
+    /// <summary>单实例互斥体名字。带 .WinUI 后缀，和旧版 WPF 构建的实例互不干扰。</summary>
+    private const string MutexName = "MessageBridge.SingleInstance.WinUI";
+
     private Mutex? _singleInstance;
     private Tray? _tray;
     private ToastBridge? _toast;
@@ -30,7 +38,7 @@ public partial class App : System.Windows.Application
 
     /// <summary>暂停推送的截止时间（null 表示未暂停）。</summary>
     private DateTime? _pauseUntil;
-    private DispatcherTimer? _pauseTimer;
+    private DispatcherQueueTimer? _pauseTimer;
 
     // ---- 两个独立开关的状态 ----
 
@@ -65,24 +73,50 @@ public partial class App : System.Windows.Application
 
     private bool IsPaused => _pauseUntil.HasValue && DateTime.Now < _pauseUntil.Value;
 
-    private void OnStartup(object sender, StartupEventArgs e)
+    public App()
     {
+        InitializeComponent();
+    }
+
+    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    {
+        Ui = DispatcherQueue.GetForCurrentThread();
+
         // 兜底：任何未处理异常都写一份日志，避免以后只有系统弹窗、没有线索
-        DispatcherUnhandledException += (_, args) => CrashLog(args.Exception);
-        AppDomain.CurrentDomain.UnhandledException += (_, args) => CrashLog(args.ExceptionObject as Exception);
-        TaskScheduler.UnobservedTaskException += (_, args) =>
+        UnhandledException += (_, e) =>
         {
-            CrashLog(args.Exception);
-            args.SetObserved();
+            CrashLog(e.Exception);
+            e.Handled = true;
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => CrashLog(e.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            CrashLog(e.Exception);
+            e.SetObserved();
         };
 
-        _singleInstance = new Mutex(true, "MessageBridge.SingleInstance", out bool createdNew);
+        _singleInstance = new Mutex(true, MutexName, out bool createdNew);
         if (!createdNew)
         {
-            // 静默启动：重复启动不再弹「已在运行」对话框，直接把已在运行的实例叫出来
-            ShowRunningInstance();
-            Shutdown();
-            return;
+            // 名字已存在不等于「有第二个实例在跑」：上一个实例崩溃时可能留下没释放的句柄。
+            // 能立刻抢到所有权，就说明其实没人在跑，继续启动自己。
+            bool owned;
+            try
+            {
+                owned = _singleInstance.WaitOne(0);
+            }
+            catch (AbandonedMutexException)
+            {
+                owned = true; // 上一个实例没正常释放，所有权已经转给我们
+            }
+
+            if (!owned)
+            {
+                // 静默启动：重复启动不再弹「已在运行」对话框，直接把已在运行的实例叫出来
+                ShowRunningInstance();
+                Exit();
+                return;
+            }
         }
 
         _dataDir = Path.Combine(
@@ -110,12 +144,13 @@ public partial class App : System.Windows.Application
         _router.InterruptionFilterChanged += OnInterruptionFilterChanged;
         _router.WindowsToastRequested += OnWindowsToastRequested;
 
-        _tray = new Tray(LoadTrayIconStream());
-        _tray.OpenRequested += ShowMainWindow;
-        _tray.SnapshotRequested += ShowSnapshotPanel;
-        _tray.ExitRequested += OnTrayExit;
-        _tray.PauseToggleRequested += OnPauseToggle;
-        _tray.StartupToggleRequested += OnStartupToggle;
+        _tray = new Tray();
+        // 托盘事件在托盘自己的 STA 线程上触发，统一转回 UI 线程再动窗口
+        _tray.OpenRequested += () => Ui.TryEnqueue(ShowMainWindow);
+        _tray.SnapshotRequested += () => Ui.TryEnqueue(ShowSnapshotPanel);
+        _tray.ExitRequested += () => Ui.TryEnqueue(OnTrayExit);
+        _tray.PauseToggleRequested += () => Ui.TryEnqueue(OnPauseToggle);
+        _tray.StartupToggleRequested += () => Ui.TryEnqueue(OnStartupToggle);
         _tray.SetStartupState(StartupRegistry.IsEnabled());
         _tray.SetPauseState(false, "暂停推送 30 分钟");
 
@@ -127,9 +162,12 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show($"端口 {_config.Port} 监听失败：{ex.Message}\n请检查端口是否被占用。",
-                "Message", MessageBoxButton.OK, MessageBoxImage.Warning);
-            Shutdown();
+            System.Windows.Forms.MessageBox.Show(
+                $"端口 {_config.Port} 监听失败：{ex.Message}\n请检查端口是否被占用。",
+                "Message", System.Windows.Forms.MessageBoxButtons.OK,
+                System.Windows.Forms.MessageBoxIcon.Warning);
+            Cleanup();
+            Exit();
             return;
         }
 
@@ -140,15 +178,17 @@ public partial class App : System.Windows.Application
 
         // 调试用：带 --snapshot 启动时自动弹一次快照面板
         // （托盘图标经常被收进溢出区，自动化测试点不到）
-        if (e.Args.Any(a => string.Equals(a, "--snapshot", StringComparison.OrdinalIgnoreCase)))
+        if (Environment.GetCommandLineArgs()
+            .Any(a => string.Equals(a, "--snapshot", StringComparison.OrdinalIgnoreCase)))
         {
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
-            t.Tick += (_, _) =>
+            var timer = Ui.CreateTimer();
+            timer.Interval = TimeSpan.FromMilliseconds(1500);
+            timer.Tick += (_, _) =>
             {
-                t.Stop();
+                timer.Stop();
                 ShowSnapshotPanel();
             };
-            t.Start();
+            timer.Start();
         }
     }
 
@@ -190,24 +230,18 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>
-    /// 静默启动：窗口照常创建（消息照收照记），只是不显示，
-    /// 并且在 Alt+Tab / 任务栏里都看不到，完全藏进托盘。
+    /// 静默启动：窗口照常创建（消息照收照记），只是不显示。
+    /// WinUI 3 的窗口要 Activate() 才显示，这里干脆不调用它。
     /// </summary>
     private void ApplySilentStartup()
     {
-        if (_mainWindow == null) return;
-        _mainWindow.ShowInTaskbar = false;
-        _mainWindow.WindowState = WindowState.Minimized;
-        _mainWindow.ShowActivated = false;
-        // 先 Show 再 Hide：保证 Window 句柄与绑定都已就绪，之后从托盘打开是即时的
-        _mainWindow.Show();
-        _mainWindow.Hide();
+        _mainWindow?.AppWindow.Hide();
     }
 
     /// <summary>重复启动时唤醒已运行的实例（主窗口最小化操作固定在主窗口里处理）。</summary>
     private static void ShowRunningInstance()
     {
-        const string slotName = "MessageBridge.MainWindow.Activate.Slot";
+        const string slotName = "MessageBridge.MainWindow.Activate.Slot.WinUI";
 
         // 这里只应该「有另一个实例在运行」。Mutex 的所有权只会转移给 WaitOne 的线程，
         // ReleaseMutex 必须由持有它的线程调用，所以本进程不碰 Mutex 本身，
@@ -228,25 +262,17 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private Stream LoadTrayIconStream()
-    {
-        var uri = new Uri("pack://application:,,,/Resources/msgicon.ico", UriKind.Absolute);
-        var sri = System.Windows.Application.GetResourceStream(uri);
-        if (sri == null) throw new InvalidOperationException("缺少托盘图标资源");
-        return sri.Stream;
-    }
-
     private void ShowMainWindow()
     {
-        _mainWindow?.BringToFront();
+        _mainWindow?.ShowFromTray();
     }
 
     private void OnTrayExit()
     {
-        _store?.Flush();
-        // 资源统一在 OnExit 里释放：之前两边各 Dispose 一次，
+        // 资源统一在 Cleanup 里释放：之前两边各 Dispose 一次，
         // 第二次对已释放的 CancellationTokenSource 调 Cancel() 会直接崩掉进程。
-        Shutdown();
+        Cleanup();
+        Exit();
     }
 
     // ---- 实时快照面板 ----
@@ -256,8 +282,8 @@ public partial class App : System.Windows.Application
         if (_snapshot == null) return;
         if (_snapshotWindow == null)
         {
-            _snapshotWindow = new SnapshotWindow(_snapshot);
-            _snapshotWindow.ToastSwitchToggled += OnLocalToastToggle;
+            _snapshotWindow = new SnapshotWindow(_snapshot, _mainWindow);
+            _snapshotWindow.ToastSwitchToggled += SetWindowsToast;
             _snapshotWindow.InterruptionFilterToggled += OnLocalDndToggle;
             _snapshotWindow.ClearRequested += OnClearPhoneNotifications;
         }
@@ -277,7 +303,7 @@ public partial class App : System.Windows.Application
 
     private void OnNotificationChanged(NotificationUpdate update)
     {
-        Dispatcher.Invoke(() =>
+        Ui.TryEnqueue(() =>
         {
             if (_snapshot == null || _icons == null) return;
             if (update.IsCancel)
@@ -289,7 +315,7 @@ public partial class App : System.Windows.Application
 
     private void OnInterruptionFilterChanged(int filter, bool canSet)
     {
-        Dispatcher.Invoke(() =>
+        Ui.TryEnqueue(() =>
         {
             _dndOn = filter == 0;
             _canSetDnd = canSet;
@@ -300,13 +326,7 @@ public partial class App : System.Windows.Application
     /// <summary>手机端拨动了 Windows 气泡开关。</summary>
     private void OnWindowsToastRequested(bool enable)
     {
-        Dispatcher.Invoke(() => SetWindowsToast(enable));
-    }
-
-    /// <summary>面板上拨动了「电脑气泡」开关。</summary>
-    private void OnLocalToastToggle(bool enable)
-    {
-        SetWindowsToast(enable);
+        Ui.TryEnqueue(() => SetWindowsToast(enable));
     }
 
     /// <summary>
@@ -338,21 +358,14 @@ public partial class App : System.Windows.Application
 
     private void OnServerDisconnected(BridgeConnection conn)
     {
-        try
+        Ui.TryEnqueue(() =>
         {
-            Dispatcher.Invoke(() =>
-            {
-                _phoneConnected = false;
-                _canSetDnd = false;
-                _dndOn = false;
-                _snapshot?.Clear(); // 断连即销毁快照，重连时手机重新批量补发
-                RefreshSnapshotPanel();
-            });
-        }
-        catch
-        {
-            // 退出阶段 Dispatcher 已关闭
-        }
+            _phoneConnected = false;
+            _canSetDnd = false;
+            _dndOn = false;
+            _snapshot?.Clear(); // 断连即销毁快照，重连时手机重新批量补发
+            RefreshSnapshotPanel();
+        });
     }
 
     // ---- 托盘：暂停推送 / 开机自启 ----
@@ -379,7 +392,8 @@ public partial class App : System.Windows.Application
             _tray?.SetPauseState(true, $"恢复推送（还剩 {left} 分钟）");
             if (_pauseTimer == null)
             {
-                _pauseTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+                _pauseTimer = Ui.CreateTimer();
+                _pauseTimer.Interval = TimeSpan.FromSeconds(20);
                 _pauseTimer.Tick += (_, _) => UpdatePauseMenu();
             }
             _pauseTimer.Start();
@@ -402,7 +416,7 @@ public partial class App : System.Windows.Application
 
     private void OnPairRequested(PendingPair pending)
     {
-        Dispatcher.Invoke(() =>
+        Ui.TryEnqueue(() =>
         {
             _pairWindow ??= new PairWindow { Rejected = () => _router?.CancelPairing(pending.DeviceId) };
             _pairWindow.ShowPair(pending);
@@ -411,9 +425,9 @@ public partial class App : System.Windows.Application
 
     private void OnPairResult(BridgeConnection conn, bool ok)
     {
-        Dispatcher.Invoke(() =>
+        Ui.TryEnqueue(() =>
         {
-            _pairWindow?.Hide();
+            _pairWindow?.HidePair();
             _mainWindow?.UpdateStatus();
 
             if (ok)
@@ -435,7 +449,7 @@ public partial class App : System.Windows.Application
 
     private void OnMessageReceived(MessageItem item)
     {
-        Dispatcher.Invoke(() =>
+        Ui.TryEnqueue(() =>
         {
             // 图标只解码一次，落盘成 png；之后列表和 Toast 都直接读文件
             if (!string.IsNullOrEmpty(item.IconBase64) && _icons != null)
@@ -483,7 +497,7 @@ public partial class App : System.Windows.Application
     {
         // Toast 失败时退回托盘气泡，保证消息一定能被看到
         if (_toast == null || !_toast.Show(title, body, iconPath, silent))
-            _tray?.ShowBalloon(title, body, System.Windows.Forms.ToolTipIcon.Info);
+            _tray?.ShowBalloon(title, body);
     }
 
     private static string ToastTitle(MessageItem item)
@@ -498,13 +512,20 @@ public partial class App : System.Windows.Application
         return s.Length <= max ? s : s[..max] + "…";
     }
 
-    protected override void OnExit(ExitEventArgs e)
+    private bool _cleanedUp;
+
+    /// <summary>退出前统一释放（对应 WPF 版的 OnExit）。</summary>
+    private void Cleanup()
     {
+        if (_cleanedUp) return;
+        _cleanedUp = true;
         try
         {
             _pauseTimer?.Stop();
             _store?.Flush();
             _snapshotWindow?.Close();
+            _pairWindow?.Close();
+            _mainWindow?.Close();
             _tray?.Dispose();
             _server?.Dispose();
         }
@@ -512,7 +533,6 @@ public partial class App : System.Windows.Application
         {
             CrashLog(ex);
         }
-        base.OnExit(e);
     }
 
     /// <summary>把未处理异常写进 logs/crash.log，方便事后定位。</summary>

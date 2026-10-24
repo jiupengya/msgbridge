@@ -1,6 +1,7 @@
 using System.IO;
 using System.Security.Cryptography;
-using System.Windows.Media.Imaging;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace MessageBridge.Services;
 
@@ -47,23 +48,18 @@ public sealed class IconStore
         => string.IsNullOrEmpty(name) ? "" : Path.Combine(_dir, name);
 
     /// <summary>
-    /// 从 png 文件解码出位图，只解码一次并冻结。
-    /// 历史列表和快照面板共用这一份逻辑，避免各自写一套。
+    /// 从 png 文件解码出位图。
+    /// WinUI 的 BitmapImage 走 URI 异步解码，这里只负责建对象（必须在 UI 线程调用），
+    /// 实际解码由 XAML 在渲染时完成，列表滚动不会重复解码同一个对象。
+    /// 必须用 file:/// 开头的绝对 URI，直接传 "C:\a\b.png" 这种路径 WinUI 不认。
     /// </summary>
-    public static BitmapImage? LoadBitmap(string? path, int decodeWidth = 64)
+    public static ImageSource? LoadBitmap(string? path, int decodeWidth = 64)
     {
         if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
         try
         {
-            var bmp = new BitmapImage();
-            bmp.BeginInit();
-            bmp.CacheOption = BitmapCacheOption.OnLoad; // 读完即释放文件，之后可被清理
-            bmp.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
-            bmp.DecodePixelWidth = decodeWidth;
-            bmp.UriSource = new Uri(path, UriKind.Absolute);
-            bmp.EndInit();
-            bmp.Freeze();
-            return bmp;
+            var uri = new Uri("file:///" + path.Replace('\\', '/'));
+            return new BitmapImage { UriSource = uri };
         }
         catch
         {
