@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Message</string>
+    <string name="notification_listener_label">Message 通知监听</string>
+    <string name="bridge_channel_name">推送服务</string>
+    <string name="bridge_notif_text_idle">推送服务运行中 · 未连接</string>
+    <string name="bridge_notif_text_connecting">正在连接电脑…</string>
+    <string name="bridge_notif_text_pairing">等待与电脑配对</string>
+    <string name="bridge_notif_text_connected">已连接 %1$s</string>
+    <string name="bridge_notif_stop">停止</string>
+    <string name="tile_description">推送服务开关</string>
+    <string name="unknown_sender">未知发送者</string>
+</resources>

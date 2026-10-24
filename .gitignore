@@ -1,0 +1,45 @@
+# ---------------- 临时 / 调试产物 ----------------
+# 会话里临时截图、草稿脚本，不进版本库
+.tmp/
+*.tmp
+*.bak
+
+# ---------------- .NET / WPF ----------------
+windows/**/bin/
+windows/**/obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.Cache
+project.lock.json
+*.nuget.g.props
+*.nuget.g.targets
+
+# ---------------- Android / Gradle ----------------
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.iml
+
+# ---------------- IDE ----------------
+.idea/
+
+# ---------------- 操作系统 ----------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# ---------------- 运行时日志 ----------------
+*.log
+crash.log

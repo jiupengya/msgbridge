@@ -1,0 +1,33 @@
+<Window x:Class="MessageBridge.PairWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Message · 配对请求"
+        Width="420" SizeToContent="Height"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Topmost="True"
+        Background="White">
+    <StackPanel Margin="24">
+        <TextBlock FontSize="18" FontWeight="SemiBold" Text="收到配对请求"
+                   Foreground="#1F2329"/>
+        <TextBlock x:Name="DeviceText" Margin="0,8,0,0" Foreground="#4E5969" FontSize="13"
+                   TextWrapping="Wrap"/>
+
+        <Border Margin="0,16,0,0" Padding="16" CornerRadius="8"
+                Background="#F0F5FF">
+            <StackPanel>
+                <TextBlock Foreground="#4E5969" FontSize="12"
+                           Text="请在手机上输入以下 PIN 码完成配对（10 分钟内有效）："/>
+                <TextBlock x:Name="PinText" Margin="0,8,0,0"
+                           FontSize="34" FontWeight="Bold" Foreground="#0C4AA9"
+                           TextAlignment="Center"
+                           HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+
+        <StackPanel Orientation="Horizontal" Margin="0,20,0,0" HorizontalAlignment="Right">
+            <Button x:Name="RejectButton" Content="拒绝" Padding="20,6"
+                    Margin="0,0,12,0" Click="OnRejectClicked"/>
+        </StackPanel>
+    </StackPanel>
+</Window>
