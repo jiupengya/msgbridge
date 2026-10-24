@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 
 namespace MessageBridge.Core;
 
@@ -14,9 +15,14 @@ public sealed class PendingPair
 }
 
 /// <summary>
-/// 消息路由：处理配对握手与业务包分发（notification / sms）。
+/// 消息路由：处理配对握手与业务包分发。
 /// 配对流程：手机发 pair.request -> 本机生成 6 位 PIN 并弹窗 -> 手机回 pair.confirm
 /// -> 校验通过则记为已信任并回 pair.ok，否则回 pair.reject。
+///
+/// 业务包分两路：
+///  - notification        -> <see cref="NotificationChanged"/>（实时快照，含取消）
+///                          + <see cref="MessageReceived"/>（历史记录，取消不记）
+///  - state.*             -> 手机上报的状态（勿扰、Windows 气泡开关回执）
 /// </summary>
 public sealed class MessageRouter
 {
@@ -24,8 +30,14 @@ public sealed class MessageRouter
     public event Action<PendingPair>? PairRequested;
     /// <summary>配对结果：成功（true）/ 失败（false）。</summary>
     public event Action<BridgeConnection, bool>? PairResult;
-    /// <summary>收到一条业务消息（通知/短信）。</summary>
+    /// <summary>收到一条业务消息（通知/短信），用于写历史。</summary>
     public event Action<MessageItem>? MessageReceived;
+    /// <summary>通知新增 / 更新 / 取消，用于实时快照面板。</summary>
+    public event Action<NotificationUpdate>? NotificationChanged;
+    /// <summary>手机上报勿扰状态：filter（0=勿扰，2=正常）+ 是否有权限修改。</summary>
+    public event Action<int, bool>? InterruptionFilterChanged;
+    /// <summary>手机修改了 Windows 气泡开关（双向同步时后台线程回调）。</summary>
+    public event Action<bool>? WindowsToastRequested;
 
     private readonly BridgeServer _server;
     private readonly TrustStore _trust;
@@ -42,6 +54,47 @@ public sealed class MessageRouter
     public void CancelPairing(string deviceId)
     {
         _pendingPairs.TryRemove(deviceId, out _);
+    }
+
+    // ---- 电脑 -> 手机的指令 ----
+
+    /// <summary>当前已配对连接（没有则返回 null）。</summary>
+    private BridgeConnection? PairedConnection => _server.Connections.FirstOrDefault(c => c.IsPaired);
+
+    public bool IsConnected => PairedConnection != null;
+
+    /// <summary>清空手机通知栏里可清除的通知（常驻通知系统不允许清）。</summary>
+    public bool SendClearNotifications()
+    {
+        var conn = PairedConnection;
+        return conn != null && conn.Send(Packet.Create(Packet.Types.CommandClearNotifications));
+    }
+
+    /// <summary>设置手机勿扰：0=开启勿扰，2=关闭勿扰。</summary>
+    public bool SendSetInterruptionFilter(int filter)
+    {
+        var conn = PairedConnection;
+        return conn != null && conn.Send(Packet.Create(
+            Packet.Types.CommandSetInterruptionFilter,
+            new JsonObject { ["filter"] = filter }));
+    }
+
+    /// <summary>请求修改 Windows 气泡开关（本地或手机发起，最终都会走这里）。</summary>
+    public bool SendSetWindowsToast(bool enable)
+    {
+        var conn = PairedConnection;
+        return conn != null && conn.Send(Packet.Create(
+            Packet.Types.CommandSetWindowsToast,
+            new JsonObject { ["enable"] = enable }));
+    }
+
+    /// <summary>下发 Windows 气泡开关状态给手机（连接建立、状态变更时调用）。</summary>
+    public bool SendWindowsToastState(bool enable)
+    {
+        var conn = PairedConnection;
+        return conn != null && conn.Send(Packet.Create(
+            Packet.Types.StateWindowsToast,
+            new JsonObject { ["enable"] = enable }));
     }
 
     private void OnDisconnected(BridgeConnection conn)
@@ -63,7 +116,7 @@ public sealed class MessageRouter
                 HandlePairConfirm(conn, packet);
                 break;
             case Packet.Types.Ping:
-                conn.Send(Packet.Create(Packet.Types.Pong, new System.Text.Json.Nodes.JsonObject
+                conn.Send(Packet.Create(Packet.Types.Pong, new JsonObject
                 {
                     ["time"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 }));
@@ -71,6 +124,20 @@ public sealed class MessageRouter
             case Packet.Types.Notification:
                 if (!conn.IsPaired) return; // 未配对不处理业务包
                 HandleBusiness(conn, packet);
+                break;
+            case Packet.Types.StateInterruptionFilter:
+                if (!conn.IsPaired) return;
+                InterruptionFilterChanged?.Invoke(
+                    packet.Body["filter"]?.GetValue<int>() ?? 2,
+                    packet.Body["canSet"]?.GetValue<bool>() ?? false);
+                break;
+            case Packet.Types.CommandSetWindowsToast:
+                if (!conn.IsPaired) return;
+                // 手机端点了开关：电脑更新配置后再回 state.windowsToast
+                WindowsToastRequested?.Invoke(packet.Body["enable"]?.GetValue<bool>() ?? true);
+                break;
+            case Packet.Types.StateWindowsToast:
+                // 电脑自己就是该状态的权威来源，忽略手机回传
                 break;
             default:
                 break;
@@ -92,7 +159,7 @@ public sealed class MessageRouter
             // 已信任设备：直接放行
             conn.IsPaired = true;
             _pendingPairs.TryRemove(deviceId, out _);
-            conn.Send(Packet.Create(Packet.Types.PairOk, new System.Text.Json.Nodes.JsonObject
+            conn.Send(Packet.Create(Packet.Types.PairOk, new JsonObject
             {
                 ["deviceId"] = deviceId,
                 ["deviceName"] = Environment.MachineName
@@ -127,7 +194,7 @@ public sealed class MessageRouter
             _pendingPairs.TryRemove(deviceId, out _);
             _trust.Add(deviceId, pending.DeviceName);
             conn.IsPaired = true;
-            conn.Send(Packet.Create(Packet.Types.PairOk, new System.Text.Json.Nodes.JsonObject
+            conn.Send(Packet.Create(Packet.Types.PairOk, new JsonObject
             {
                 ["deviceId"] = deviceId,
                 ["deviceName"] = Environment.MachineName
@@ -144,10 +211,30 @@ public sealed class MessageRouter
 
     private void HandleBusiness(BridgeConnection conn, Packet packet)
     {
-        // isCancel=true 表示通知在手机端被移除，不展示为一条消息
-        if (packet.Body["isCancel"]?.GetValue<bool>() == true) return;
-        var item = MessageItem.FromNotification(packet.Body);
-        MessageReceived?.Invoke(item);
+        var body = packet.Body;
+        var isCancel = body["isCancel"]?.GetValue<bool>() ?? false;
+
+        var update = new NotificationUpdate
+        {
+            Key = body["id"]?.GetValue<string>() ?? "",
+            IsCancel = isCancel,
+            IsSync = body["isSync"]?.GetValue<bool>() ?? false,
+            IsOngoing = body["isOngoing"]?.GetValue<bool>() ?? false,
+            Source = body["appName"]?.GetValue<string>()
+                     ?? body["packageName"]?.GetValue<string>() ?? "未知应用",
+            Title = body["title"]?.GetValue<string>() ?? "",
+            Content = body["text"]?.GetValue<string>() ?? "",
+            Time = body["time"]?.GetValue<long>() ?? 0,
+            IconBase64 = body["icon"]?.GetValue<string>() ?? ""
+        };
+
+        // 快照始终跟着手机通知的存亡走（含取消）
+        NotificationChanged?.Invoke(update);
+
+        // 历史记录只增不删：取消事件、连接后的批量补发、常驻通知都不写
+        // （常驻通知只服务快照面板，写进历史会被米家这类应用刷屏）
+        if (isCancel || update.IsSync || update.IsOngoing) return;
+        MessageReceived?.Invoke(MessageItem.FromNotification(body));
     }
 
     private static string GeneratePin()

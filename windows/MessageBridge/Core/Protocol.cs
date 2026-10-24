@@ -4,10 +4,13 @@ namespace MessageBridge.Core;
 
 /// <summary>
 /// 消息桥协议包（参考 KDE Connect NetworkPacket）：
-/// 每行一条 UTF-8 JSON，{"type":"...","id":...,"body":{...}}，以换行结尾。
+/// 每行一条 UTF-8 JSON，{"protoVer":1,"type":"...","id":...,"body":{...}}，以换行结尾。
 /// </summary>
 public sealed class Packet
 {
+    /// <summary>协议版本，所有包都带上，方便以后平滑升级。</summary>
+    public const int ProtoVer = 1;
+
     public static class Types
     {
         public const string PairRequest = "pair.request";
@@ -15,6 +18,19 @@ public sealed class Packet
         public const string PairOk = "pair.ok";
         public const string PairReject = "pair.reject";
         public const string Notification = "notification";
+
+        // 电脑 -> 手机：指令
+        public const string CommandClearNotifications = "command.clearNotifications";
+        public const string CommandSetInterruptionFilter = "command.setInterruptionFilter";
+        /// <summary>双向：手机或电脑任一端修改 Windows 气泡开关。</summary>
+        public const string CommandSetWindowsToast = "command.setWindowsToast";
+
+        // 状态上报
+        /// <summary>手机 -> 电脑：手机当前勿扰状态。</summary>
+        public const string StateInterruptionFilter = "state.interruptionFilter";
+        /// <summary>电脑 -> 手机：Windows 气泡开关状态。</summary>
+        public const string StateWindowsToast = "state.windowsToast";
+
         public const string Ping = "ping";
         public const string Pong = "pong";
         public const string Bye = "bye";
@@ -46,6 +62,7 @@ public sealed class Packet
     {
         var obj = new JsonObject
         {
+            ["protoVer"] = ProtoVer,
             ["type"] = Type,
             ["id"] = Id,
             ["body"] = Body

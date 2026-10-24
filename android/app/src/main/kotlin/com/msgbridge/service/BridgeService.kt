@@ -79,9 +79,10 @@ class BridgeService : Service() {
         BridgeController.start(this)
         Log.i(TAG, "service started, target=${Prefs.host}:${Prefs.port}")
 
-        // 配对成功：同步存量通知
+        // 配对成功：同步存量通知做快照，并上报手机勿扰状态
         BridgeController.setOnPaired {
             NotificationListener.instance?.syncCurrentNotifications()
+            BridgeController.reportInterruptionState()
         }
 
         // 连接状态变化时更新常驻通知文本

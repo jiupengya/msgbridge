@@ -44,6 +44,18 @@ class BridgeClient(private val context: Context, private val listener: Listener)
         fun onPaired()
         /** 配对失败（PIN 错误等） */
         fun onPairRejected()
+
+        /** 电脑端要求清空手机通知栏 */
+        fun onClearNotificationsRequested()
+
+        /** 电脑端要求设置勿扰：0=开启勿扰，2=关闭勿扰 */
+        fun onInterruptionFilterRequested(filter: Int)
+
+        /** 任一端改了 Windows 气泡开关 */
+        fun onWindowsToastRequested(enable: Boolean)
+
+        /** 电脑端上报的 Windows 气泡开关状态 */
+        fun onWindowsToastState(enable: Boolean)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -187,6 +199,23 @@ class BridgeClient(private val context: Context, private val listener: Listener)
             }
             BridgeProtocol.TYPE_PONG -> {
                 // 保活回应，无需处理
+            }
+            BridgeProtocol.TYPE_STATE_WINDOWS_TOAST -> {
+                val body = packet.optJSONObject("body")
+                listener.onWindowsToastState(body?.optBoolean("enable", true) ?: true)
+            }
+            BridgeProtocol.TYPE_COMMAND_CLEAR_NOTIFICATIONS -> {
+                listener.onClearNotificationsRequested()
+            }
+            BridgeProtocol.TYPE_COMMAND_SET_INTERRUPTION_FILTER -> {
+                val body = packet.optJSONObject("body")
+                listener.onInterruptionFilterRequested(
+                    body?.optInt("filter", BridgeProtocol.FILTER_ALL) ?: BridgeProtocol.FILTER_ALL
+                )
+            }
+            BridgeProtocol.TYPE_COMMAND_SET_WINDOWS_TOAST -> {
+                val body = packet.optJSONObject("body")
+                listener.onWindowsToastRequested(body?.optBoolean("enable", true) ?: true)
             }
         }
     }

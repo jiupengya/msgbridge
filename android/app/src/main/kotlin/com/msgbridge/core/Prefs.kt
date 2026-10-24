@@ -41,11 +41,6 @@ object Prefs {
         get() = sp.getBoolean("push_only_when_locked", false)
         set(value) = sp.edit().putBoolean("push_only_when_locked", value).apply()
 
-    /** 手机开启免打扰（勿扰模式）时暂停推送，默认开启 */
-    var skipWhenDnd: Boolean
-        get() = sp.getBoolean("skip_when_dnd", true)
-        set(value) = sp.edit().putBoolean("skip_when_dnd", value).apply()
-
     /** 是否已与电脑完成配对 */
     var paired: Boolean
         get() = sp.getBoolean("paired", false)

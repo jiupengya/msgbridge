@@ -17,9 +17,12 @@ public partial class App : System.Windows.Application
     private TrustStore? _trust;
     private MessageStore? _store;
     private IconStore? _icons;
+    private SnapshotStore? _snapshot;
     private MainWindow? _mainWindow;
+    private SnapshotWindow? _snapshotWindow;
     private PairWindow? _pairWindow;
     private string _dataDir = "";
+    private string _configPath = "";
 
     /// <summary>连续通知合并窗口：这段时间内到达的消息合并成「N 条新消息」。</summary>
     private static readonly TimeSpan MergeWindow = TimeSpan.FromSeconds(5);
@@ -29,10 +32,36 @@ public partial class App : System.Windows.Application
     private DateTime? _pauseUntil;
     private DispatcherTimer? _pauseTimer;
 
+    // ---- 两个独立开关的状态 ----
+
+    /// <summary>电脑是否弹出系统 Toast（持久化到 config.json，两端都能改）。</summary>
+    private bool _enableWindowsToast = true;
+
+    /// <summary>手机当前是否处于勿扰（由手机上报）。</summary>
+    private bool _dndOn;
+
+    /// <summary>手机是否授予了修改勿扰的权限；false 时电脑端勿扰开关置灰。</summary>
+    private bool _canSetDnd;
+
+    /// <summary>手机是否已配对连接（断连时快照清空、远程开关置灰）。</summary>
+    private bool _phoneConnected;
+
     private sealed class Config
     {
         public int Port { get; set; } = 17001;
+
+        /// <summary>是否弹出 Windows 系统通知气泡。</summary>
+        public bool EnableWindowsToast { get; set; } = true;
     }
+
+    private Config _config = new();
+
+    private static readonly JsonSerializerOptions ConfigJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true
+    };
 
     private bool IsPaused => _pauseUntil.HasValue && DateTime.Now < _pauseUntil.Value;
 
@@ -60,39 +89,37 @@ public partial class App : System.Windows.Application
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MessageBridge");
         Directory.CreateDirectory(_dataDir);
-
-        // 读取端口配置
-        var port = 17001;
-        try
-        {
-            var cfgPath = Path.Combine(_dataDir, "config.json");
-            if (File.Exists(cfgPath))
-            {
-                var cfg = JsonSerializer.Deserialize<Config>(File.ReadAllText(cfgPath));
-                if (cfg != null && cfg.Port is >= 1 and <= 65535) port = cfg.Port;
-            }
-        }
-        catch { }
+        _configPath = Path.Combine(_dataDir, "config.json");
+        LoadConfig();
 
         _icons = new IconStore(_dataDir);
         _store = new MessageStore(_dataDir, _icons);
+        _snapshot = new SnapshotStore();
+        // 快照面板引用的图标不属于历史记录，裁剪时要一起保留
+        _store.ExtraIconKeep = () => _snapshot.IconFiles;
         _trust = new TrustStore(_dataDir);
         AumidShortcut.EnsureRegistered(); // 系统 Toast 需要 AUMID 身份（开始菜单快捷方式）
         _toast = new ToastBridge(_dataDir);
-        _server = new BridgeServer { Port = port };
+        _server = new BridgeServer { Port = _config.Port };
         _router = new MessageRouter(_server, _trust);
 
         _router.PairRequested += OnPairRequested;
         _router.PairResult += OnPairResult;
         _router.MessageReceived += OnMessageReceived;
+        _router.NotificationChanged += OnNotificationChanged;
+        _router.InterruptionFilterChanged += OnInterruptionFilterChanged;
+        _router.WindowsToastRequested += OnWindowsToastRequested;
 
         _tray = new Tray(LoadTrayIconStream());
         _tray.OpenRequested += ShowMainWindow;
+        _tray.SnapshotRequested += ShowSnapshotPanel;
         _tray.ExitRequested += OnTrayExit;
         _tray.PauseToggleRequested += OnPauseToggle;
         _tray.StartupToggleRequested += OnStartupToggle;
         _tray.SetStartupState(StartupRegistry.IsEnabled());
         _tray.SetPauseState(false, "暂停推送 30 分钟");
+
+        _server.Disconnected += OnServerDisconnected;
 
         try
         {
@@ -100,16 +127,65 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show($"端口 {port} 监听失败：{ex.Message}\n请检查端口是否被占用。",
+            System.Windows.MessageBox.Show($"端口 {_config.Port} 监听失败：{ex.Message}\n请检查端口是否被占用。",
                 "Message", MessageBoxButton.OK, MessageBoxImage.Warning);
             Shutdown();
             return;
         }
 
-        _mainWindow = new MainWindow(_store, port, _server);
+        _mainWindow = new MainWindow(_store, _config.Port, _server);
         // 静默启动：默认不显示主窗口，只常驻托盘。
-        // 想看图例/清空记录时从托盘菜单「打开 Message」或双击托盘图标打开。
+        // 看完历史消息从托盘右键「打开 Message」或双击托盘图标打开。
         ApplySilentStartup();
+
+        // 调试用：启动后自动弹一次快照面板（托盘图标在溢出区时无法用自动化点击）
+        if (Environment.GetEnvironmentVariable("MSGBRIDGE_SHOW_SNAPSHOT") == "1")
+        {
+            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+            t.Tick += (_, _) =>
+            {
+                t.Stop();
+                ShowSnapshotPanel();
+            };
+            t.Start();
+        }
+    }
+
+    // ---- 配置 ----
+
+    private void LoadConfig()
+    {
+        try
+        {
+            if (File.Exists(_configPath))
+            {
+                var cfg = JsonSerializer.Deserialize<Config>(File.ReadAllText(_configPath), ConfigJson);
+                if (cfg != null) _config = cfg;
+            }
+        }
+        catch
+        {
+            // 配置损坏就用默认值
+        }
+
+        if (_config.Port is < 1 or > 65535) _config.Port = 17001;
+        _enableWindowsToast = _config.EnableWindowsToast;
+
+        // 首次运行 / 新增字段时把完整配置落一次盘，方便用户直接改
+        SaveConfig();
+    }
+
+    private void SaveConfig()
+    {
+        try
+        {
+            _config.EnableWindowsToast = _enableWindowsToast;
+            File.WriteAllText(_configPath, JsonSerializer.Serialize(_config, ConfigJson));
+        }
+        catch
+        {
+            // 写配置失败不影响运行
+        }
     }
 
     /// <summary>
@@ -172,6 +248,112 @@ public partial class App : System.Windows.Application
         Shutdown();
     }
 
+    // ---- 实时快照面板 ----
+
+    private void ShowSnapshotPanel()
+    {
+        if (_snapshot == null) return;
+        if (_snapshotWindow == null)
+        {
+            _snapshotWindow = new SnapshotWindow(_snapshot);
+            _snapshotWindow.ToastSwitchToggled += OnLocalToastToggle;
+            _snapshotWindow.InterruptionFilterToggled += OnLocalDndToggle;
+            _snapshotWindow.ClearRequested += OnClearPhoneNotifications;
+        }
+
+        RefreshSnapshotPanel();
+        _snapshotWindow.ShowAtTray();
+    }
+
+    private void RefreshSnapshotPanel()
+    {
+        _snapshotWindow?.SetState(
+            _phoneConnected,
+            _enableWindowsToast,
+            _dndOn,
+            _canSetDnd);
+    }
+
+    private void OnNotificationChanged(NotificationUpdate update)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (_snapshot == null || _icons == null) return;
+            if (update.IsCancel)
+                _snapshot.Remove(update.Key);
+            else
+                _snapshot.Upsert(update, _icons);
+        });
+    }
+
+    private void OnInterruptionFilterChanged(int filter, bool canSet)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _dndOn = filter == 0;
+            _canSetDnd = canSet;
+            RefreshSnapshotPanel();
+        });
+    }
+
+    /// <summary>手机端拨动了 Windows 气泡开关。</summary>
+    private void OnWindowsToastRequested(bool enable)
+    {
+        Dispatcher.Invoke(() => SetWindowsToast(enable));
+    }
+
+    /// <summary>面板上拨动了「电脑气泡」开关。</summary>
+    private void OnLocalToastToggle(bool enable)
+    {
+        SetWindowsToast(enable);
+    }
+
+    /// <summary>
+    /// 修改 Windows 气泡开关：写配置 → 立即生效 → 把状态回传给手机。
+    /// 电脑和手机两个入口最终都走到这里，状态只有一个真相。
+    /// </summary>
+    private void SetWindowsToast(bool enable)
+    {
+        _enableWindowsToast = enable;
+        SaveConfig();
+        _router?.SendWindowsToastState(enable);
+        RefreshSnapshotPanel();
+    }
+
+    /// <summary>面板上拨动了「手机勿扰」开关：下发指令，等手机上报真实状态。</summary>
+    private void OnLocalDndToggle(int filter)
+    {
+        if (_router?.SendSetInterruptionFilter(filter) != true) return;
+        // 乐观更新，手机成功后会回 state.interruptionFilter 纠正
+        _dndOn = filter == 0;
+        RefreshSnapshotPanel();
+    }
+
+    /// <summary>面板上点了「清空手机通知」。</summary>
+    private void OnClearPhoneNotifications()
+    {
+        _router?.SendClearNotifications();
+    }
+
+    private void OnServerDisconnected(BridgeConnection conn)
+    {
+        try
+        {
+            Dispatcher.Invoke(() =>
+            {
+                _phoneConnected = false;
+                _canSetDnd = false;
+                _dndOn = false;
+                _snapshot?.Clear(); // 断连即销毁快照，重连时手机重新批量补发
+                RefreshSnapshotPanel();
+            });
+        }
+        catch
+        {
+            // 退出阶段 Dispatcher 已关闭
+        }
+    }
+
     // ---- 托盘：暂停推送 / 开机自启 ----
 
     private void OnPauseToggle()
@@ -232,6 +414,15 @@ public partial class App : System.Windows.Application
         {
             _pairWindow?.Hide();
             _mainWindow?.UpdateStatus();
+
+            if (ok)
+            {
+                _phoneConnected = true;
+                // 连接建立后把 Windows 气泡开关状态同步给手机
+                _router?.SendWindowsToastState(_enableWindowsToast);
+                RefreshSnapshotPanel();
+            }
+
             var text = ok
                 ? $"已与 {conn.DeviceName} 完成配对"
                 : $"与 {conn.DeviceName} 配对失败（PIN 不正确或已过期）";
@@ -252,10 +443,12 @@ public partial class App : System.Windows.Application
             }
             item.SetIconPath(_icons?.PathOf(item.IconFile) ?? "");
 
+            // 历史记录始终写入，和气泡开关无关
             _store?.Add(item);
 
             if (_tray == null) return;
-            if (IsPaused) return; // 暂停推送：只记录，不弹通知
+            if (IsPaused) return;         // 托盘「暂停推送」：只记录，不弹通知
+            if (!_enableWindowsToast) return; // 气泡开关关闭：只记录，不弹通知
 
             ShowMergedToast(item);
         });
@@ -310,6 +503,7 @@ public partial class App : System.Windows.Application
         {
             _pauseTimer?.Stop();
             _store?.Flush();
+            _snapshotWindow?.Close();
             _tray?.Dispose();
             _server?.Dispose();
         }

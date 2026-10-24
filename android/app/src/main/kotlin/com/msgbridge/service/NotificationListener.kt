@@ -55,8 +55,8 @@ class NotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!Prefs.pushNotifications) return
         if (!BridgeController.isConnected()) return
-        // 免打扰（勿扰）期间不推送
-        if (isDndOn()) return
+        // 注意：勿扰不再拦截推送 —— 勿扰开关只控制手机本机是否响铃，
+        // 通知始终同步到电脑，由电脑端的「气泡开关」决定是否弹窗。
 
         // 仅锁屏推送（参考 KDE Connect 的 sendOnlyIfLocked）
         if (Prefs.pushOnlyWhenLocked) {
@@ -93,51 +93,61 @@ class NotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         syncCurrentNotifications()
+        // 监听器重连时把勿扰状态也重新报一次
+        BridgeController.reportInterruptionState()
     }
 
-    /** 配对成功 / 连接建立后由 BridgeController 回调，同步一次存量通知 */
+    /** 系统勿扰变化（用户在下拉面板手动切换）：上报给电脑 */
+    override fun onInterruptionFilterChanged(interruptionFilter: Int) {
+        super.onInterruptionFilterChanged(interruptionFilter)
+        BridgeController.reportInterruptionState()
+    }
+
+    /**
+     * 同步手机当前所有存活通知到电脑，用于重连后重建快照。
+     * 带上 isSync=true，电脑端据此「不弹 Toast、不写历史」。
+     *
+     * 注意必须全量重发：不能按 currentNotifications 跳过，
+     * 否则首次 onListenerConnected 时（尚未连上电脑）把这些 key 标记成已发送，
+     * 真正连上后就永远补不回去了。
+     */
     fun syncCurrentNotifications() {
         if (!Prefs.pushNotifications) return
-        if (isDndOn()) return
+        if (!BridgeController.isConnected()) return
         try {
             val notifications = activeNotifications ?: return
             for (n in notifications) {
                 if (!shouldForward(n)) continue
-                if (!currentNotifications.contains(n.key)) {
-                    sendNotificationPacket(n, isCancel = false, isPreexisting = true)
-                }
+                sendNotificationPacket(n, isCancel = false, isPreexisting = true, isSync = true)
             }
         } catch (e: SecurityException) {
             Log.w(TAG, "sync active notifications failed", e)
         }
     }
 
-    // ---------- 过滤（与 KDE Connect NotificationsPlugin 保持一致） ----------
-
     /**
-     * 手机是否处于免打扰（勿扰）模式。
-     * interruptionFilter != ALL 即视为免打扰（含「仅优先联系人」「仅闹钟」等模式）。
-     * 读取失败时按「未开启」处理：宁可多推，也不误丢消息。
+     * 清空手机通知栏里可清除的通知。
+     * cancelAllNotifications 清不掉 Ongoing 常驻通知，那些会继续留在电脑的快照列表里。
      */
-    private fun isDndOn(): Boolean {
-        if (!Prefs.skipWhenDnd) return false
-        return try {
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL
+    fun clearAllNotifications() {
+        try {
+            cancelAllNotifications()
+            Log.i(TAG, "cancelAllNotifications called")
         } catch (e: Exception) {
-            Log.w(TAG, "read interruption filter failed", e)
-            false
+            Log.w(TAG, "clear all notifications failed", e)
         }
     }
+
+    // ---------- 过滤（与 KDE Connect NotificationsPlugin 保持一致） ----------
 
     private fun shouldForward(sbn: StatusBarNotification): Boolean {
         val notification = sbn.notification
         val flags = notification.flags
 
-        // 前台服务 / 常驻通知 / 仅本机 / 组摘要 / 媒体播放控制：都不推
-        if ((flags and Notification.FLAG_FOREGROUND_SERVICE) != 0 ||
-            (flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
-            (flags and Notification.FLAG_LOCAL_ONLY) != 0 ||
+        // 仅本机 / 组摘要 / 媒体播放控制：不推
+        // 注意：前台服务与常驻通知**不再过滤**，它们要进电脑的实时快照面板
+        // （cancelAllNotifications 清不掉它们，快照里会一直留着）
+        if ((flags and Notification.FLAG_LOCAL_ONLY) != 0 ||
             (flags and NotificationCompat.FLAG_GROUP_SUMMARY) != 0 ||
             Notification.CATEGORY_TRANSPORT == notification.category
         ) {
@@ -197,10 +207,16 @@ class NotificationListener : NotificationListenerService() {
     private fun sendNotificationPacket(
         sbn: StatusBarNotification,
         isCancel: Boolean,
-        isPreexisting: Boolean
+        isPreexisting: Boolean,
+        isSync: Boolean = false
     ) {
         val notification = sbn.notification
         val key = sbn.key
+        val flags = notification.flags
+
+        // 常驻通知（前台服务 / Ongoing）：只进电脑的快照列表，不弹 Toast、不写历史
+        val isOngoing = (flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
+            (flags and Notification.FLAG_FOREGROUND_SERVICE) != 0
 
         val isUpdate = currentNotifications.contains(key)
         if (!isCancel && !isUpdate) {
@@ -216,7 +232,9 @@ class NotificationListener : NotificationListenerService() {
             .put("packageName", sbn.packageName)
             .put("time", sbn.postTime)
             .put("isClearable", sbn.isClearable)
-            .put("silent", isPreexisting || (isUpdate && (notification.flags and Notification.FLAG_ONLY_ALERT_ONCE) != 0))
+            .put("isOngoing", isOngoing)
+            .put("isSync", isSync)
+            .put("silent", isPreexisting || (isUpdate && (flags and Notification.FLAG_ONLY_ALERT_ONCE) != 0))
 
         if (!isCancel) {
             // 图标：大图标 → 小图标 → 应用图标（96x96 PNG base64）

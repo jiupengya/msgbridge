@@ -71,26 +71,7 @@ public sealed class MessageItem
         _iconImage = null;
     }
 
-    private static BitmapImage? LoadIcon(string path)
-    {
-        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
-        try
-        {
-            var bmp = new BitmapImage();
-            bmp.BeginInit();
-            bmp.CacheOption = BitmapCacheOption.OnLoad; // 读完即释放文件，之后可被清理
-            bmp.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
-            bmp.DecodePixelWidth = 64;
-            bmp.UriSource = new Uri(path, UriKind.Absolute);
-            bmp.EndInit();
-            bmp.Freeze();
-            return bmp;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    private static BitmapImage? LoadIcon(string path) => IconStore.LoadBitmap(path);
 
     public static MessageItem FromNotification(JsonObject body)
     {
@@ -120,6 +101,12 @@ public sealed class MessageStore
     private readonly IconStore _icons;
     private DispatcherTimer? _saveTimer;
     private bool _dirty;
+
+    /// <summary>
+    /// 额外的图标保留项：快照面板引用的图标不属于历史记录，
+    /// 裁剪时如果不带上它们，快照里的图标会被当成垃圾删掉。
+    /// </summary>
+    public Func<IEnumerable<string>>? ExtraIconKeep { get; set; }
 
     public ObservableCollection<MessageItem> Messages { get; } = new();
 
@@ -260,8 +247,13 @@ public sealed class MessageStore
             File.Move(tmp, _path, overwrite: true);
             _dirty = false;
 
-            // 只保留仍被消息引用的图标
-            _icons.Trim(Messages.Select(m => m.IconFile));
+            // 只保留仍被消息（或快照面板）引用的图标
+            var keep = Messages.Select(m => m.IconFile);
+            if (ExtraIconKeep != null)
+            {
+                try { keep = keep.Concat(ExtraIconKeep()); } catch { }
+            }
+            _icons.Trim(keep);
         }
         catch
         {

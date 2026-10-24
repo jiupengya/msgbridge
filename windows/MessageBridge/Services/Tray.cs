@@ -14,10 +14,15 @@ public sealed class Tray : IDisposable
 
     public event Action? OpenRequested;
     public event Action? ExitRequested;
+    /// <summary>左键单击：弹出实时通知快照面板。</summary>
+    public event Action? SnapshotRequested;
     /// <summary>点击「暂停推送 / 恢复推送」。</summary>
     public event Action? PauseToggleRequested;
     /// <summary>点击「开机自启」。</summary>
     public event Action? StartupToggleRequested;
+
+    /// <summary>左键单击后要等过双击窗口期，避免双击时也顺带弹出快照面板。</summary>
+    private bool _singleClickPending;
 
     public Tray(Stream iconStream)
     {
@@ -42,8 +47,34 @@ public sealed class Tray : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => ExitRequested?.Invoke());
         _icon.ContextMenuStrip = menu;
-        _icon.DoubleClick += (_, _) => OpenRequested?.Invoke();
         _icon.BalloonTipClicked += (_, _) => OpenRequested?.Invoke();
+
+        // 左键单击 -> 快照面板；双击 -> 主窗口。
+        // NotifyIcon 双击时也会先触发 MouseClick，所以单击要等过双击窗口期才生效。
+        _icon.MouseClick += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left) return;
+            _singleClickPending = true;
+            var timer = new System.Windows.Forms.Timer
+            {
+                Interval = SystemInformation.DoubleClickTime
+            };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                if (!_singleClickPending) return;
+                _singleClickPending = false;
+                SnapshotRequested?.Invoke();
+            };
+            timer.Start();
+        };
+
+        _icon.DoubleClick += (_, _) =>
+        {
+            _singleClickPending = false;
+            OpenRequested?.Invoke();
+        };
     }
 
     /// <summary>更新「暂停推送」菜单项的文字与勾选状态。</summary>

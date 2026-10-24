@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.msgbridge.core.BridgeController
+import com.msgbridge.core.BridgeProtocol
 import com.msgbridge.core.ConnectionState
 import com.msgbridge.core.Prefs
 import com.msgbridge.service.NotificationListener
@@ -292,9 +293,14 @@ private fun ConnectionSettingsCard() {
 @Composable
 private fun SwitchesCard(context: Context) {
     val serviceEnabled by BridgeController.serviceEnabled.collectAsState()
+    val connectionState by BridgeController.state.collectAsState()
+    val windowsToast by BridgeController.windowsToast.collectAsState()
+    val dndFilter by BridgeController.interruptionFilter.collectAsState()
+    val canSetDnd by BridgeController.canSetDnd.collectAsState()
     var pushNotifications by remember { mutableStateOf(Prefs.pushNotifications) }
     var pushOnlyWhenLocked by remember { mutableStateOf(Prefs.pushOnlyWhenLocked) }
-    var skipWhenDnd by remember { mutableStateOf(Prefs.skipWhenDnd) }
+
+    val connected = connectionState == ConnectionState.Connected
 
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -326,13 +332,33 @@ private fun SwitchesCard(context: Context) {
                     Prefs.pushOnlyWhenLocked = v
                 }
             )
+
+            Spacer(Modifier.height(12.dp))
+            Text("系统开关", style = MiuixTheme.textStyles.body1)
+
+            // 电脑是否弹系统通知气泡：状态由电脑下发，点击后把指令发给电脑
             SwitchRow(
-                title = "免打扰时暂停推送",
-                subtitle = "手机开启勿扰模式时不推送到电脑",
-                checked = skipWhenDnd,
-                onCheckedChange = { v ->
-                    skipWhenDnd = v
-                    Prefs.skipWhenDnd = v
+                title = "电脑系统通知（气泡）",
+                subtitle = if (connected) "关闭后电脑只记录消息、不弹通知"
+                else "未连接电脑，暂时无法切换",
+                checked = windowsToast,
+                enabled = connected,
+                onCheckedChange = { BridgeController.requestWindowsToast(it) }
+            )
+            // 手机本机勿扰：不是「暂停推送」，只是让手机不再响铃
+            SwitchRow(
+                title = "手机勿扰",
+                subtitle = when {
+                    !canSetDnd -> "需要「勿扰访问权限」，请到下方权限处授予"
+                    dndFilter == BridgeProtocol.FILTER_DND -> "已开启勿扰，通知仍会同步到电脑"
+                    else -> "开启后手机不再响铃，通知仍会同步到电脑"
+                },
+                checked = dndFilter == BridgeProtocol.FILTER_DND,
+                enabled = canSetDnd,
+                onCheckedChange = { on ->
+                    BridgeController.setInterruptionFilter(
+                        if (on) BridgeProtocol.FILTER_DND else BridgeProtocol.FILTER_ALL
+                    )
                 }
             )
         }
@@ -344,6 +370,7 @@ private fun SwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
@@ -351,7 +378,12 @@ private fun SwitchRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MiuixTheme.textStyles.body1)
+            Text(
+                title,
+                style = MiuixTheme.textStyles.body1,
+                color = if (enabled) MiuixTheme.colorScheme.onBackground
+                else MiuixTheme.colorScheme.onBackgroundVariant
+            )
             Text(
                 subtitle,
                 style = MiuixTheme.textStyles.body2,
@@ -359,7 +391,11 @@ private fun SwitchRow(
             )
         }
         Spacer(Modifier.width(8.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = { if (enabled) onCheckedChange(it) },
+            enabled = enabled
+        )
     }
 }
 
@@ -368,6 +404,8 @@ private fun SwitchRow(
 @Composable
 private fun PermissionsCard(context: Context) {
     var permissionTick by remember { mutableStateOf(0) }
+
+    val canSetDnd by BridgeController.canSetDnd.collectAsState()
 
     val hasNotifListener = NotificationListener.hasReadNotificationsPermission(context)
     val hasPostNotif = Build.VERSION.SDK_INT < 33 ||
@@ -408,6 +446,17 @@ private fun PermissionsCard(context: Context) {
                     }
                 )
             }
+            // 电脑远程开关手机勿扰需要这个权限
+            PermissionRow(
+                title = "勿扰访问权限",
+                subtitle = "允许电脑远程开关手机勿扰",
+                granted = canSetDnd,
+                onClick = {
+                    runCatching {
+                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                    }
+                }
+            )
             PermissionRow(
                 title = "忽略电池优化",
                 subtitle = "熄屏后保持连接稳定（MIUI 还需把省电策略设为无限制）",

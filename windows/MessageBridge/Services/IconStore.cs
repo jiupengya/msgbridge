@@ -1,5 +1,6 @@
 using System.IO;
 using System.Security.Cryptography;
+using System.Windows.Media.Imaging;
 
 namespace MessageBridge.Services;
 
@@ -44,6 +45,31 @@ public sealed class IconStore
     /// <summary>图标文件名 -> 绝对路径；文件名为空时返回空串。</summary>
     public string PathOf(string? name)
         => string.IsNullOrEmpty(name) ? "" : Path.Combine(_dir, name);
+
+    /// <summary>
+    /// 从 png 文件解码出位图，只解码一次并冻结。
+    /// 历史列表和快照面板共用这一份逻辑，避免各自写一套。
+    /// </summary>
+    public static BitmapImage? LoadBitmap(string? path, int decodeWidth = 64)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+        try
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.CacheOption = BitmapCacheOption.OnLoad; // 读完即释放文件，之后可被清理
+            bmp.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+            bmp.DecodePixelWidth = decodeWidth;
+            bmp.UriSource = new Uri(path, UriKind.Absolute);
+            bmp.EndInit();
+            bmp.Freeze();
+            return bmp;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     /// <summary>删除没有被任何消息引用的图标文件。</summary>
     public void Trim(IEnumerable<string> keepNames)
