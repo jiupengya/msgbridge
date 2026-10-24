@@ -357,11 +357,6 @@ public partial class App : Application
                 _snapshot.Remove(update.Key);
             else
                 _snapshot.Upsert(update, _icons, fallbackIcon);
-
-            // 排查「快照里没图标」：sync 包到底带没带 icon
-            DiagnosticLog(
-                $"snapshot key={update.Key} pkg='{update.PackageName}' src='{update.Source}' " +
-                $"sync={update.IsSync} iconLen={update.IconBase64.Length} fallback='{fallbackIcon}'");
         });
     }
 
@@ -584,24 +579,6 @@ public partial class App : Application
         catch (Exception ex)
         {
             CrashLog(ex);
-        }
-    }
-
-    /// <summary>临时诊断日志（排查快照图标用，稳定后可以删）。</summary>
-    private static void DiagnosticLog(string message)
-    {
-        try
-        {
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MessageBridge", "logs");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "diagnostic.log"),
-                $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
-        }
-        catch
-        {
-            // 忽略
         }
     }
 
