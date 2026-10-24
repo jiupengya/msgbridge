@@ -231,8 +231,9 @@ public sealed class MessageRouter
         // 快照始终跟着手机通知的存亡走（含取消）
         NotificationChanged?.Invoke(update);
 
-        // 历史记录只增不删：取消事件、连接后的批量补发、常驻通知都不写
-        // （常驻通知只服务快照面板，写进历史会被米家这类应用刷屏）
+        // 历史记录只增不删：取消事件、连接后的批量补发、常驻通知都不写。
+        // （当前手机端已经把常驻通知整体过滤掉了，IsOngoing 恒为 false，
+        //  这里保留判断是为了以后若恢复「常驻只进快照」时不用再改电脑端。）
         if (isCancel || update.IsSync || update.IsOngoing) return;
         MessageReceived?.Invoke(MessageItem.FromNotification(body));
     }

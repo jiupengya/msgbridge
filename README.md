@@ -52,7 +52,7 @@ msgbridge/
 | `pair.confirm` | 手机 → 电脑 | 提交电脑端显示的 6 位 PIN |
 | `pair.ok` / `pair.reject` | 电脑 → 手机 | 配对结果 |
 | `notification` | 手机 → 电脑 | 通知（`isCancel=true` 表示通知被移除） |
-| `command.clearNotifications` | 电脑 → 手机 | 清空手机可清除的通知（常驻通知系统不允许清） |
+| `command.clearNotifications` | 电脑 → 手机 | 清空手机通知栏（`cancelAllNotifications`，常驻通知系统本来也不允许清） |
 | `command.setInterruptionFilter` | 电脑 → 手机 | 设置手机勿扰（`filter`: 0=开启勿扰, 2=关闭勿扰） |
 | `command.setWindowsToast` | 双向 | 修改 Windows 气泡开关（`enable`: bool） |
 | `state.interruptionFilter` | 手机 → 电脑 | 上报手机勿扰状态（`filter` 同上，`canSet` 表示是否有权限修改） |
@@ -80,15 +80,18 @@ msgbridge/
 | `isCancel` | 是否为移除事件 |
 | `isClearable` | 是否可滑动清除 |
 | `silent` | 是否静默（存量同步 / 更新时仅提醒一次） |
-| `isOngoing` | 是否常驻通知（前台服务 / Ongoing），只进快照面板，不弹气泡、不写历史 |
+| `isOngoing` | 是否常驻通知（前台服务 / Ongoing）。当前手机端已整体过滤常驻通知，该字段恒为 `false`，保留以便以后需要「常驻只进快照」时启用 |
 | `isSync` | 是否为重连后的批量补发，电脑端不弹气泡、不写历史 |
 | `conversation` | 会话历史 `[{sender, content}]`（微信/QQ 等 MessagingStyle 通知） |
 | `groupName` | 群聊名称 |
 | `actions` | 动作按钮标题数组（排除带输入框的回复动作） |
 | `requestReplyId` | 存在可回复动作时的标识 |
 
-**手机端不可见的通知不会推送**（与 KDE Connect 一致）：仅本机通知、通知组摘要、媒体播放控制、系统低电量、自己的通知、被暂停的应用（专注模式/数字健康）。
-前台服务与常驻通知**会推送**，但只用于电脑端的实时快照面板（不弹气泡、不写历史），因为 `cancelAllNotifications` 清不掉它们。通知 posted 后延迟 50ms 再发，防止「刚弹出就被移除」的通知也推送到电脑端。
+**手机端不可见的通知不会推送**（与 KDE Connect 一致）：前台服务通知、常驻通知、仅本机通知、通知组摘要、媒体播放控制、系统低电量、自己的通知、被暂停的应用（专注模式/数字健康）。
+
+> 常驻通知（`FLAG_FOREGROUND_SERVICE` / `FLAG_ONGOING_EVENT`）为什么也不推：手机通知栏里它们大多被系统折叠进「静默通知 / 更多通知」，用户根本看不到，推到电脑快照面板就是一堆对不上号的噪音（小米智能卡、跨屏协同、语音唤醒……）。试过用 `getRanking().importance` 区分「是否真的可见」，但这些常驻通知普遍是 DEFAULT/LOW 级别，靠重要度分不出来，所以整体过滤。
+
+通知 posted 后延迟 50ms 再发，防止「刚弹出就被移除」的通知也推送到电脑端。
 
 ### 配对流程（手动 IP + PIN）
 
@@ -126,7 +129,8 @@ msgbridge/
 - 顶部三个控件：`电脑气泡` 开关、`手机勿扰` 开关、`清空手机通知` 按钮
 - **断连即清空**，重连后手机会把所有现存通知批量补发一次重建快照
 - 点击窗口外部自动收起，置顶显示
-- `清空手机通知` 调用手机 `cancelAllNotifications()`：普通通知被清掉，**常驻通知清不掉，会继续留在快照里**（带「常驻」角标）
+- `清空手机通知` 调用手机 `cancelAllNotifications()`：普通通知被清掉，快照随之清空
+- 只包含手机通知栏里用户真正看得见的通知（常驻通知已在手机端过滤掉）
 
 ## 与 KDE Connect 的实现对照
 
@@ -186,7 +190,7 @@ cd android
 
 - Windows 端：`dotnet build` 0 警告 0 错误；`smoke_test.py` 已跑通 `ping→pong`、信任设备放行、通知收包与持久化全链路（`isCancel` 通知不落盘）。
 - 安卓端：`gradlew :app:assembleDebug` 构建产物 APK。
-- 快照面板：实测实时新增/更新、`isCancel` 移除、断连清空、重连批量补发；`清空手机通知` 后普通通知消失、常驻通知保留。
+- 快照面板：实测实时新增/更新、`isCancel` 移除、断连清空、重连批量补发；`清空手机通知` 后快照清空。
 - 两个开关：电脑面板拨动 → `config.json` 落盘 + 手机收到 `state.windowsToast`；手机拨动 → 电脑 `config.json` 同步更新；面板拨动勿扰 → 手机 `zen_mode` 0↔2 切换并回传 `state.interruptionFilter`。
 - 气泡开关关闭时，通知仍写入 `messages.json` 历史，只是不弹 Toast。
 

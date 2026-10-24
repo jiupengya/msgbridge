@@ -29,10 +29,8 @@ public sealed class NotificationUpdate
 public sealed class SnapshotItem : INotifyPropertyChanged
 {
     public string Key { get; init; } = "";
+    /// <summary>常驻通知标记，用于面板上的「常驻」角标（当前手机端不推常驻通知，恒为 false）。</summary>
     public bool IsOngoing { get; init; }
-
-    /// <summary>常驻通知的角标文字。</summary>
-    public string Badge => IsOngoing ? "常驻" : "";
 
     private string _source = "";
     public string Source { get => _source; set => Set(ref _source, value); }
@@ -138,19 +136,5 @@ public sealed class SnapshotStore
         _index.Clear();
         Items.Clear();
         Changed?.Invoke();
-    }
-
-    /// <summary>
-    /// 清空手机通知后调用：丢掉所有非常驻条目，常驻通知系统清不掉，保留在快照里。
-    /// </summary>
-    public void KeepOngoingOnly()
-    {
-        var doomed = _index.Values.Where(i => !i.IsOngoing).ToList();
-        foreach (var item in doomed)
-        {
-            _index.Remove(item.Key);
-            Items.Remove(item);
-        }
-        if (doomed.Count > 0) Changed?.Invoke();
     }
 }

@@ -144,10 +144,16 @@ class NotificationListener : NotificationListenerService() {
         val notification = sbn.notification
         val flags = notification.flags
 
-        // 仅本机 / 组摘要 / 媒体播放控制：不推
-        // 注意：前台服务与常驻通知**不再过滤**，它们要进电脑的实时快照面板
-        // （cancelAllNotifications 清不掉它们，快照里会一直留着）
-        if ((flags and Notification.FLAG_LOCAL_ONLY) != 0 ||
+        // 前台服务 / 常驻通知 / 仅本机 / 组摘要 / 媒体播放控制：都不推
+        //
+        // 常驻通知为什么也过滤：手机通知栏里它们大多数被系统折叠进「静默通知 / 更多通知」，
+        // 用户在手机上看不到，推到电脑快照面板就成了一堆对不上号的噪音
+        // （小米智能卡、跨屏协同、语音唤醒之类）。
+        // 试过用 getRanking().importance 判断「是否真的可见」，但这些常驻通知普遍是
+        // DEFAULT/LOW 级别，靠重要度区分不出来，所以整体不推。
+        if ((flags and Notification.FLAG_FOREGROUND_SERVICE) != 0 ||
+            (flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
+            (flags and Notification.FLAG_LOCAL_ONLY) != 0 ||
             (flags and NotificationCompat.FLAG_GROUP_SUMMARY) != 0 ||
             Notification.CATEGORY_TRANSPORT == notification.category
         ) {
@@ -214,7 +220,10 @@ class NotificationListener : NotificationListenerService() {
         val key = sbn.key
         val flags = notification.flags
 
-        // 常驻通知（前台服务 / Ongoing）：只进电脑的快照列表，不弹 Toast、不写历史
+        // 常驻通知（前台服务 / Ongoing）标记。
+        // 注意：现在 shouldForward 已经把常驻通知整体过滤掉了，所以走到这里的
+        // 通知这个值恒为 false；字段保留是为了以后如果需要「常驻只进快照」，
+        // 只要把 shouldForward 里那两行去掉就能恢复。
         val isOngoing = (flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
             (flags and Notification.FLAG_FOREGROUND_SERVICE) != 0
 
