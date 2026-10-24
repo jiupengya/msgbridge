@@ -128,6 +128,7 @@ public partial class App : Application
 
         _icons = new IconStore(_dataDir);
         _store = new MessageStore(_dataDir, _icons);
+        LoadAppInfoCache();
         _snapshot = new SnapshotStore();
         // 快照面板引用的图标不属于历史记录，裁剪时要一起保留
         _store.ExtraIconKeep = () => _snapshot.IconFiles;
@@ -156,6 +157,7 @@ public partial class App : Application
         _tray.SetPauseState(false, "暂停推送 30 分钟");
 
         _server.Disconnected += OnServerDisconnected;
+        _server.Connected += OnServerConnected;
 
         try
         {
@@ -317,11 +319,22 @@ public partial class App : Application
 
     /// <summary>
     /// 包名 → (应用显示名, 图标文件名)。
-    /// 连接后的批量补发里，手机端偶尔只能给出包名、也不带图标（旧通知的 Icon 取不到），
+    /// 连接后的批量补发里，手机端偶尔只能给出包名、也不带图标（挂久了的通知取不到 Icon），
     /// 这里用之前正常推送时记下的信息补全，让快照面板和主界面看起来一致。
+    /// 启动时先从历史记录里重建一份，所以重启后照样有效。
     /// </summary>
     private readonly Dictionary<string, (string Name, string IconFile)> _appInfo =
         new(StringComparer.Ordinal);
+
+    private void LoadAppInfoCache()
+    {
+        if (_store == null) return;
+        foreach (var m in _store.Messages)
+        {
+            if (string.IsNullOrEmpty(m.PackageName) || string.IsNullOrEmpty(m.IconFile)) continue;
+            _appInfo[m.PackageName] = (m.Source, m.IconFile);
+        }
+    }
 
     private void OnNotificationChanged(NotificationUpdate update)
     {
@@ -411,6 +424,22 @@ public partial class App : Application
             _canSetDnd = false;
             _dndOn = false;
             _snapshot?.Clear(); // 断连即销毁快照，重连时手机重新批量补发
+            RefreshSnapshotPanel();
+        });
+    }
+
+    /// <summary>
+    /// 手机连上来（包括「已配对设备直接重连」，这条路径以前不会触发 PairResult）。
+    /// 之前只在配对成功时把 _phoneConnected 置 true，重连后一直是 false，
+    /// 导致快照面板永远显示「未连接」、勿扰开关永远置灰。
+    /// </summary>
+    private void OnServerConnected(BridgeConnection conn)
+    {
+        Ui.TryEnqueue(() =>
+        {
+            _phoneConnected = true;
+            // 连接建立后把 Windows 气泡开关状态同步给手机
+            _router?.SendWindowsToastState(_enableWindowsToast);
             RefreshSnapshotPanel();
         });
     }

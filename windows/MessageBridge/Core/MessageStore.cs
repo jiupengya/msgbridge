@@ -17,6 +17,13 @@ public sealed class MessageItem
     public string Kind { get; init; } = "notification";
     public long Time { get; init; }
     public string Source { get; init; } = "";
+
+    /// <summary>
+    /// 应用包名。历史里存一份，重启后就能按包名找回应用名和图标
+    /// （手机端补发通知时经常只给包名、不带图标）。
+    /// </summary>
+    public string PackageName { get; init; } = "";
+
     public string Title { get; init; } = "";
     public string Content { get; init; } = "";
 
@@ -123,6 +130,7 @@ public sealed class MessageStore
         public string Kind { get; set; } = "notification";
         public long Time { get; set; }
         public string Source { get; set; } = "";
+        public string PackageName { get; set; } = "";
         public string Title { get; set; } = "";
         public string Content { get; set; } = "";
         public bool Silent { get; set; }
@@ -152,6 +160,7 @@ public sealed class MessageStore
                     Kind = string.IsNullOrEmpty(s.Kind) ? "notification" : s.Kind,
                     Time = s.Time,
                     Source = s.Source,
+                    PackageName = s.PackageName,
                     Title = s.Title,
                     Content = s.Content,
                     Silent = s.Silent,
@@ -230,6 +239,7 @@ public sealed class MessageStore
                 Kind = m.Kind,
                 Time = m.Time,
                 Source = m.Source,
+                PackageName = m.PackageName,
                 Title = m.Title,
                 Content = m.Content,
                 Silent = m.Silent,

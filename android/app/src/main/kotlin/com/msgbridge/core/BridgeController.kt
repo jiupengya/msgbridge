@@ -180,8 +180,8 @@ object BridgeController {
     }
 
     /**
-     * 电脑端下发勿扰指令：0=开启勿扰，2=关闭勿扰。
-     * 成功后再上报 state.interruptionFilter；没权限就只上报状态、不改系统。
+     * 电脑端/手机端下发勿扰指令：0=开启勿扰，2=关闭勿扰。
+     * 设完之后读回系统真实值再上报；没权限就只上报状态、不改系统。
      */
     fun setInterruptionFilter(filter: Int): Boolean {
         val ctx = appContext ?: return false
@@ -192,12 +192,27 @@ object BridgeController {
                 reportInterruptionState()
                 return false
             }
+
             nm.setInterruptionFilter(protoToSystem(filter))
+
+            // 有些 ROM（MIUI/HyperOS）会忽略这次设置，读回来确认一下，
+            // 没生效就把真实状态上报给电脑端，别让两端的开关显示成假的
+            val actual = nm.currentInterruptionFilter
+            val applied = if (filter == BridgeProtocol.FILTER_DND) {
+                actual != NotificationManager.INTERRUPTION_FILTER_ALL
+            } else {
+                actual == NotificationManager.INTERRUPTION_FILTER_ALL
+            }
+            if (!applied) {
+                Log.w(TAG, "setInterruptionFilter had no effect: requested=$filter actual=$actual")
+            }
+
             _interruptionFilter.value = currentFilter()
             reportInterruptionState()
-            true
+            applied
         } catch (e: Exception) {
             Log.w(TAG, "set interruption filter failed", e)
+            reportInterruptionState()
             false
         }
     }
@@ -232,19 +247,26 @@ object BridgeController {
 
     /**
      * 系统勿扰值 -> 协议值。
-     * 协议里只分两种：0=勿扰（含「仅优先联系人」「仅闹钟」等所有非 ALL 模式），2=正常。
+     * 协议里只分两种：0=勿扰（含「仅优先」「仅闹钟」等所有非 ALL 模式），2=正常。
+     * UNKNOWN 说明这次读不到（还没授权时系统就返回它），按「正常」处理，
+     * 免得界面上谎报成「已开启勿扰」。
      */
-    private fun systemToProto(systemFilter: Int): Int =
-        if (systemFilter == NotificationManager.INTERRUPTION_FILTER_ALL) {
-            BridgeProtocol.FILTER_ALL
-        } else {
-            BridgeProtocol.FILTER_DND
-        }
+    private fun systemToProto(systemFilter: Int): Int = when (systemFilter) {
+        NotificationManager.INTERRUPTION_FILTER_ALL,
+        NotificationManager.INTERRUPTION_FILTER_UNKNOWN -> BridgeProtocol.FILTER_ALL
+        else -> BridgeProtocol.FILTER_DND
+    }
 
-    /** 协议值 -> 系统勿扰值。0 对应完全静音（NONE），2 对应正常（ALL）。 */
+    /**
+     * 协议值 -> 系统勿扰值。
+     *
+     * 0 用 PRIORITY 而不是 NONE：NONE 会把手机铃声、媒体一起静音（用户反馈
+     * 「开个勿扰连静音都打开了」）。PRIORITY 只压通知，来电仍可以响。
+     * 2 对应正常（ALL）。
+     */
     private fun protoToSystem(filter: Int): Int =
         if (filter == BridgeProtocol.FILTER_DND) {
-            NotificationManager.INTERRUPTION_FILTER_NONE
+            NotificationManager.INTERRUPTION_FILTER_PRIORITY
         } else {
             NotificationManager.INTERRUPTION_FILTER_ALL
         }

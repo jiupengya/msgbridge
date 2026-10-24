@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using MessageBridge.Core;
@@ -10,17 +11,20 @@ namespace MessageBridge;
 /// <summary>
 /// 托盘左键弹出的「实时通知快照面板」。
 /// 独立于 messages.json 历史：这里只显示手机此刻还挂着的通知，断连即清空。
-/// 无边框 + 亚克力背景 + 置顶；关闭按钮 / Esc / 点击外部 / 再点托盘图标 都能收起。
+///
+/// 交互：弹出时正常抢焦点（用户点托盘就是想在面板上操作），
+/// 所以「点到别处 → 失焦自动收起」就能直接工作，Mica 背景在有焦点时也正常显示。
+/// 另外还有 × 按钮、Esc、再点一次托盘图标 三种收起方式。
 /// </summary>
 public sealed partial class SnapshotWindow : Window
 {
-    private const int DesignWidth = 400;
+    private const int DesignWidth = 320;
     /// <summary>最大高度：通知再多就滚动。</summary>
-    private const int MaxDesignHeight = 540;
+    private const int MaxDesignHeight = 520;
     /// <summary>标题 + 开关行 + 底栏这些固定部分占的高度。</summary>
-    private const int ChromeHeight = 122;
+    private const int ChromeHeight = 116;
     /// <summary>单条通知大概占的高度（两行内容 + 留白）。</summary>
-    private const int ItemHeight = 84;
+    private const int ItemHeight = 78;
 
     /// <summary>面板里改了「电脑气泡」开关。</summary>
     public event Action<bool>? ToastSwitchToggled;
@@ -38,22 +42,18 @@ public sealed partial class SnapshotWindow : Window
     /// <summary>窗口尺寸已经按当前 DPI 摆过一次。</summary>
     private bool _sized;
 
-    /// <summary>窗口在这一轮显示期间是否被真正激活过（用户点过面板）。</summary>
-    private bool _everActivated;
-
     /// <summary>第一次显示走正常的 Show（之后 DPI 才读得准）。</summary>
     private bool _shownOnce;
 
     /// <summary>
-    /// 鼠标离开面板多久后自动收起。
-    /// 因为弹出时特意不抢焦点，「失焦收起」在用户还没碰过面板时不会触发，
-    /// 所以再加一道「鼠标移开就收」的保险，避免面板一直挂在屏幕上收不掉。
+    /// 「刚弹出时别自己收起」的守卫定时器。
+    /// 必须存成字段：之前写成局部变量，方法返回后没有强引用，
+    /// DispatcherQueueTimer 被 GC 回收 → _allowAutoHide 永远是 false → 点外面根本不收。
     /// </summary>
-    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _autoHideTimer;
-    private DateTime _shownAt;
-    private int _outsideTicks;
-    /// <summary>这一轮显示里鼠标是否进过面板（进过才按「移开就收」处理）。</summary>
-    private bool _hoveredPanel;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _showGuardTimer;
+
+    /// <summary>点面板外面的兜底检测（有些窗口被点到时不会真正抢焦点，光靠失焦会漏）。</summary>
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _clickWatchTimer;
 
     public SnapshotWindow(SnapshotStore store, Window? owner)
     {
@@ -121,6 +121,18 @@ public sealed partial class SnapshotWindow : Window
 
             ClearButton.IsEnabled = connected;
             StatusText.Text = connected ? "已连接" : "未连接";
+
+            // 底部一行说清楚当前为什么不给点，别让人以为开关坏了
+            FooterText.Text = !connected
+                ? "手机未连接"
+                : canSetDnd
+                    ? "点面板外面或按 Esc 收起"
+                    : "手机未授予「勿扰访问权限」，勿扰开关不可用";
+
+            // 手机没给「勿扰访问权限」时开关是灰的，说清楚为什么，别让人以为点坏了
+            ToolTipService.SetToolTip(DndSwitch, canSetDnd
+                ? "开启后手机不再响铃，通知仍会同步到电脑"
+                : "手机没有授予「勿扰访问权限」，打开手机上的 Message，到权限列表里授予即可");
         }
         finally
         {
@@ -130,10 +142,7 @@ public sealed partial class SnapshotWindow : Window
 
     public bool IsShowing => AppWindow.IsVisible;
 
-    /// <summary>
-    /// 启动时先离屏显示再藏起来：让 XAML 内容和 DPI 都就绪。
-    /// 这样用户第一次点托盘时就能直接走「不抢焦点」的显示路径，不会把游戏顶掉。
-    /// </summary>
+    /// <summary>启动时先离屏显示再藏起来，让 XAML 内容和 DPI 就绪，第一次点托盘不闪。</summary>
     public void Prewarm()
     {
         if (_shownOnce) return;
@@ -141,7 +150,6 @@ public sealed partial class SnapshotWindow : Window
         AppWindow.Show();
         AppWindow.Hide();
         _shownOnce = true;
-        _everActivated = false;
     }
 
     /// <summary>显示/收起（托盘左键用这个做开关）。</summary>
@@ -154,30 +162,15 @@ public sealed partial class SnapshotWindow : Window
     public void Hide()
     {
         _allowAutoHide = false;
-        _everActivated = false;
-        _outsideTicks = 0;
-        _autoHideTimer?.Stop();
         AppWindow.Hide();
     }
 
-    /// <summary>
-    /// 贴着任务栏右下角弹出。
-    /// 关键：显示时不抢前台焦点（否则会把全屏游戏/正在用的窗口顶掉），
-    /// 所以只有用户点过面板、它真正被激活过之后，「点外面自动收起」才会生效。
-    /// </summary>
+    /// <summary>贴着任务栏右下角弹出。</summary>
     public void ShowAtTray()
     {
-        if (!_shownOnce)
-        {
-            // 第一次必须正常 Show 一次，之后 GetDpiForWindow 才会返回真实值
-            AppWindow.Show();
-            _shownOnce = true;
-            _everActivated = false;
-        }
-        else
-        {
-            Services.WindowScale.ShowNoActivate(this);
-        }
+        // 先 Show 再量尺寸：窗口没显示过时 GetDpiForWindow 只返回 96
+        AppWindow.Show();
+        Activate();
 
         PlaceAtTray();
         // WinUI 在首次激活后会按它记的旧尺寸再摆一次窗口，等布局跑完再摆一次才稳
@@ -185,63 +178,54 @@ public sealed partial class SnapshotWindow : Window
 
         // 显示后短暂窗口期内不自动收起，之后才允许「点击外部关闭」
         _allowAutoHide = false;
-        _shownAt = DateTime.Now;
-        _outsideTicks = 0;
-        _hoveredPanel = false;
-        var timer = App.Ui.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(220);
-        timer.Tick += (_, _) =>
+        if (_showGuardTimer == null)
         {
-            timer.Stop();
-            _allowAutoHide = true;
-        };
-        timer.Start();
+            _showGuardTimer = App.Ui.CreateTimer();
+            _showGuardTimer.Interval = TimeSpan.FromMilliseconds(220);
+            _showGuardTimer.Tick += (_, _) =>
+            {
+                _showGuardTimer?.Stop();
+                _allowAutoHide = true;
+            };
+        }
+        _showGuardTimer.Stop();
+        _showGuardTimer.Start();
 
-        StartAutoHideWatch();
+        StartClickWatch();
     }
 
     /// <summary>
-    /// 每 250ms 看一眼鼠标在不在面板上。
-    /// 鼠标进过面板再移开 → 2 秒后收起；
-    /// 鼠标一直没进过面板（用户只是想扫一眼、鼠标还在托盘上）→ 30 秒后收起，
-    /// 免得它一直赖在屏幕上收不掉。
+    /// 失焦收起是主力，但点到桌面、游戏这类不抢焦点的窗口时 Deactivated 不会来，
+    /// 所以再加一道：鼠标在面板外面按下左键 → 直接收。
     /// </summary>
-    private void StartAutoHideWatch()
+    private void StartClickWatch()
     {
-        if (_autoHideTimer == null)
+        if (_clickWatchTimer == null)
         {
-            _autoHideTimer = App.Ui.CreateTimer();
-            _autoHideTimer.Interval = TimeSpan.FromMilliseconds(250);
-            _autoHideTimer.Tick += (_, _) =>
+            _clickWatchTimer = App.Ui.CreateTimer();
+            _clickWatchTimer.Interval = TimeSpan.FromMilliseconds(120);
+            _clickWatchTimer.Tick += (_, _) =>
             {
                 if (!AppWindow.IsVisible)
                 {
-                    _autoHideTimer.Stop();
+                    _clickWatchTimer.Stop();
                     return;
                 }
 
-                var elapsed = (DateTime.Now - _shownAt).TotalSeconds;
+                // 刚弹出来的前 400ms 不理会，否则托盘那一下点击会被当成「点外面」
+                if (!_allowAutoHide) return;
 
                 if (IsCursorOverPanel())
                 {
-                    _hoveredPanel = true;
-                    _outsideTicks = 0;
+                    // 读掉这次按下记录，免得移出面板后被误判
+                    _ = GetAsyncKeyState(VkLeftButton);
                     return;
                 }
 
-                // 刚弹出来的前 2 秒给用户反应时间
-                if (elapsed < 2) return;
-
-                if (!_hoveredPanel)
-                {
-                    if (elapsed >= 30) Hide();
-                    return;
-                }
-
-                if (++_outsideTicks >= 8) Hide();
+                if ((GetAsyncKeyState(VkLeftButton) & 0x8001) != 0) Hide();
             };
         }
-        _autoHideTimer.Start();
+        _clickWatchTimer.Start();
     }
 
     private bool IsCursorOverPanel()
@@ -285,18 +269,13 @@ public sealed partial class SnapshotWindow : Window
         return Math.Min(MaxDesignHeight, ChromeHeight + count * ItemHeight);
     }
 
+    /// <summary>点到别处（窗口失焦）就收起，这是面板的主力关闭方式。</summary>
     private void OnActivated(object sender, WindowActivatedEventArgs args)
     {
-        if (args.WindowActivationState != WindowActivationState.Deactivated)
+        if (args.WindowActivationState == WindowActivationState.Deactivated && _allowAutoHide && _sized)
         {
-            // 用户点了面板（或首次显示抢到焦点），之后失焦才该收起
-            _everActivated = true;
+            AppWindow.Hide();
             return;
-        }
-
-        if (_allowAutoHide && _everActivated && _sized)
-        {
-            Hide();
         }
     }
 
@@ -314,10 +293,21 @@ public sealed partial class SnapshotWindow : Window
         ToastSwitchToggled?.Invoke(ToastSwitch.IsChecked == true);
     }
 
-    private void OnDndChanged(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 勾选 = 开勿扰，取消 = 关勿扰。
+    /// 用 Checked / Unchecked 两个事件分别传固定值，不去读 IsChecked ——
+    /// 读属性会受事件触发时机影响，之前就踩到过「勾选反而发了关闭」的坑。
+    /// </summary>
+    private void OnDndChecked(object sender, RoutedEventArgs e)
     {
         if (_suppressEvents) return;
-        InterruptionFilterToggled?.Invoke(DndSwitch.IsChecked == true ? 0 : 2);
+        InterruptionFilterToggled?.Invoke(0);
+    }
+
+    private void OnDndUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        InterruptionFilterToggled?.Invoke(2);
     }
 
     private void OnClearClicked(object sender, RoutedEventArgs e)
@@ -363,4 +353,9 @@ public sealed partial class SnapshotWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    private const int VkLeftButton = 0x01;
 }

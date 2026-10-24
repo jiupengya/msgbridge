@@ -5,7 +5,11 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:core="using:MessageBridge.Core">
 
-    <!-- 无边框窗口：圆角靠 DWM 裁，背景和主窗口一样用 Mica，视觉上是一套 -->
+    <!--
+      无边框窗口：圆角靠 DWM 裁，背景交给 Mica。
+      面板弹出时会抢焦点（用户点托盘就是要在面板上操作），有焦点时 Mica 正常显示；
+      点到别处窗口失焦就收起了，所以也看不到「无焦点的 Mica」。
+    -->
     <Border BorderThickness="1" CornerRadius="8"
             BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}"
             Background="Transparent">
@@ -24,10 +28,10 @@
             </Grid.RowDefinitions>
 
             <!-- 标题栏 -->
-            <Grid Grid.Row="0" Padding="14,6,8,6">
-                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center"
+            <Grid Grid.Row="0" Padding="12,6,6,6">
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
                             HorizontalAlignment="Left">
-                    <FontIcon Glyph="&#xE8BD;" FontSize="14"
+                    <FontIcon Glyph="&#xE8BD;" FontSize="13"
                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                     <TextBlock Text="手机实时通知" FontSize="13" FontWeight="SemiBold" />
                     <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}"
@@ -38,10 +42,10 @@
                 </StackPanel>
 
                 <Button x:Name="CloseButton" HorizontalAlignment="Right" VerticalAlignment="Center"
-                        Width="30" Height="28" Padding="0" Background="Transparent"
+                        Width="28" Height="26" Padding="0" Background="Transparent"
                         BorderThickness="0" Click="OnCloseClicked"
                         ToolTipService.ToolTip="关闭（Esc）">
-                    <FontIcon Glyph="&#xE711;" FontSize="11" />
+                    <FontIcon Glyph="&#xE711;" FontSize="10" />
                 </Button>
             </Grid>
 
@@ -50,26 +54,27 @@
                     Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
             <!-- 开关与操作 -->
-            <Grid Grid.Row="2" Padding="14,6">
-                <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center"
+            <Grid Grid.Row="2" Padding="12,6">
+                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"
                             HorizontalAlignment="Left">
                     <CheckBox x:Name="ToastSwitch" Content="电脑气泡" MinWidth="0"
                               Checked="OnToastChanged" Unchecked="OnToastChanged" />
                     <CheckBox x:Name="DndSwitch" Content="手机勿扰" MinWidth="0"
-                              Checked="OnDndChanged" Unchecked="OnDndChanged" />
+                              Checked="OnDndChecked" Unchecked="OnDndUnchecked" />
                 </StackPanel>
-                <Button x:Name="ClearButton" Content="清空手机通知" HorizontalAlignment="Right"
-                        VerticalAlignment="Center" Click="OnClearClicked" />
+                <Button x:Name="ClearButton" Content="清空" HorizontalAlignment="Right"
+                        VerticalAlignment="Center" Click="OnClearClicked"
+                        ToolTipService.ToolTip="清空手机通知栏" />
             </Grid>
 
             <!-- 快照列表 -->
             <Grid Grid.Row="3">
                 <ListView x:Name="SnapshotList" SelectionMode="None"
-                          ItemContainerTransitions="{x:Null}" Padding="6,2">
+                          ItemContainerTransitions="{x:Null}" Padding="4,2">
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                            <Setter Property="Padding" Value="8,0" />
+                            <Setter Property="Padding" Value="6,0" />
                             <Setter Property="Margin" Value="0,1" />
                             <Setter Property="MinHeight" Value="0" />
                         </Style>
@@ -77,23 +82,23 @@
 
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="core:SnapshotItem">
-                            <Grid Padding="4,8" ColumnSpacing="10">
+                            <Grid Padding="4,7" ColumnSpacing="8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
-                                <Border Width="32" Height="32" CornerRadius="7"
+                                <Border Width="28" Height="28" CornerRadius="6"
                                         Background="{ThemeResource SubtleFillColorSecondaryBrush}"
                                         VerticalAlignment="Top">
                                     <Image Source="{x:Bind IconImage, Mode=OneWay}"
-                                           Width="26" Height="26" Stretch="UniformToFill" />
+                                           Width="22" Height="22" Stretch="UniformToFill" />
                                 </Border>
 
                                 <StackPanel Grid.Column="1" Spacing="1">
                                     <TextBlock Text="{x:Bind Source, Mode=OneWay}"
-                                               Style="{StaticResource ItemTitleStyle}" />
+                                               Style="{StaticResource ItemTitleStyle}" FontSize="12" />
                                     <TextBlock Text="{x:Bind Title, Mode=OneWay}"
                                                Style="{StaticResource ItemBodyStyle}"
                                                Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -104,7 +109,7 @@
 
                                 <TextBlock Grid.Column="2" Text="{x:Bind TimeText, Mode=OneWay}"
                                            Style="{StaticResource HintTextStyle}"
-                                           FontSize="11" VerticalAlignment="Top" />
+                                           FontSize="10" VerticalAlignment="Top" />
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>
@@ -112,21 +117,20 @@
 
                 <!-- 空状态 -->
                 <StackPanel x:Name="EmptyPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
-                            Spacing="8" IsHitTestVisible="False">
-                    <FontIcon Glyph="&#xE7F4;" FontSize="24"
+                            Spacing="6" IsHitTestVisible="False">
+                    <FontIcon Glyph="&#xE7F4;" FontSize="20"
                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                    <TextBlock Text="手机当前没有通知" FontSize="12"
+                    <TextBlock Text="手机当前没有通知" FontSize="11"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                 </StackPanel>
             </Grid>
 
             <!-- 底部提示 -->
-            <Border Grid.Row="4" Padding="14,6"
+            <Border Grid.Row="4" Padding="12,5"
                     BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                     BorderThickness="0,1,0,0">
-                <TextBlock Style="{StaticResource HintTextStyle}"
-                           Text="只显示手机通知栏里还挂着的通知 · 点面板外面或按 Esc 收起" />
-            </Border>
+                <TextBlock x:Name="FooterText" Style="{StaticResource HintTextStyle}" FontSize="11"
+                           Text="点面板外面或按 Esc 收起" />            </Border>
         </Grid>
     </Border>
 </Window>
