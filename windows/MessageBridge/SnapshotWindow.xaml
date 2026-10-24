@@ -31,10 +31,10 @@
                             HorizontalAlignment="Left">
                     <FontIcon Glyph="&#xE8BD;" FontSize="13"
                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                    <TextBlock Text="手机实时通知" FontSize="13" FontWeight="SemiBold" />
+                    <TextBlock Text="手机实时通知" FontSize="14" FontWeight="SemiBold" />
                     <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}"
                             CornerRadius="3" Padding="5,0" VerticalAlignment="Center">
-                        <TextBlock x:Name="StatusText" Text="未连接" FontSize="10"
+                        <TextBlock x:Name="StatusText" Text="未连接" FontSize="11"
                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                     </Border>
                 </StackPanel>
@@ -87,16 +87,17 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
-                                <Border Width="28" Height="28" CornerRadius="6"
+                                <!-- 图标尺寸对齐 Windows 通知卡片里的 appLogoOverride（48 DIP） -->
+                                <Border Width="48" Height="48" CornerRadius="10"
                                         Background="{ThemeResource SubtleFillColorSecondaryBrush}"
                                         VerticalAlignment="Top">
                                     <Image Source="{x:Bind IconImage, Mode=OneWay}"
-                                           Width="22" Height="22" Stretch="UniformToFill" />
+                                           Width="40" Height="40" Stretch="UniformToFill" />
                                 </Border>
 
                                 <StackPanel Grid.Column="1" Spacing="1">
                                     <TextBlock Text="{x:Bind Source, Mode=OneWay}"
-                                               Style="{StaticResource ItemTitleStyle}" FontSize="12" />
+                                               Style="{StaticResource ItemTitleStyle}" />
                                     <TextBlock Text="{x:Bind Title, Mode=OneWay}"
                                                Style="{StaticResource ItemBodyStyle}"
                                                Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -107,7 +108,7 @@
 
                                 <TextBlock Grid.Column="2" Text="{x:Bind TimeText, Mode=OneWay}"
                                            Style="{StaticResource HintTextStyle}"
-                                           FontSize="10" VerticalAlignment="Top" />
+                                           VerticalAlignment="Top" />
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>

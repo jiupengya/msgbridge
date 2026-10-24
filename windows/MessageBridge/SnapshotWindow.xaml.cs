@@ -23,8 +23,8 @@ public sealed partial class SnapshotWindow : Window
     private const int MaxDesignHeight = 520;
     /// <summary>标题 + 开关行 + 底栏这些固定部分占的高度。</summary>
     private const int ChromeHeight = 116;
-    /// <summary>单条通知大概占的高度（两行内容 + 留白）。</summary>
-    private const int ItemHeight = 78;
+    /// <summary>单条通知大概占的高度（图标 48 + 两行内容 + 留白）。</summary>
+    private const int ItemHeight = 100;
 
     /// <summary>面板里改了「电脑气泡」开关。</summary>
     public event Action<bool>? ToastSwitchToggled;
