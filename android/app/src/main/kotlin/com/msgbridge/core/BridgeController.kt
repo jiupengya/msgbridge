@@ -1,12 +1,16 @@
 package com.msgbridge.core
 
+import android.app.KeyguardManager
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -178,6 +182,12 @@ object BridgeController {
     /** 启动之后多久摘掉叠加窗口（给启动过程留点余量）。 */
     private const val OVERLAY_ANCHOR_LINGER_MS = 500L
 
+    /** 点亮屏幕用的唤醒锁最长持有时间（到点自动释放，不用手动 release）。 */
+    private const val SCREEN_WAKE_TIMEOUT_MS = 10_000L
+
+    /** 锁屏时最多等用户多久解锁，超时就放弃这次打开请求。 */
+    private const val UNLOCK_WAIT_TIMEOUT_MS = 60_000L
+
     /**
      * 是否有「显示在其他应用的上层」权限。
      * 不是用来画悬浮窗的，而是「从后台打开应用」唯一能拿到的用户豁免，详见
@@ -212,18 +222,124 @@ object BridgeController {
             return false
         }
 
-        Handler(Looper.getMainLooper()).post {
-            withOverlayAnchor(ctx) {
-                val clicked = key.isNotEmpty() &&
-                    NotificationListener.instance?.clickNotification(key) == true
-                if (clicked) {
-                    Log.i(TAG, "opened notification via content intent: $key")
-                } else {
-                    launchApp(ctx, packageName)
+        // 熄屏时先点亮屏幕，让用户看到锁屏界面
+        wakeScreenIfNeeded(ctx)
+
+        val open: () -> Unit = {
+            Handler(Looper.getMainLooper()).post {
+                withOverlayAnchor(ctx) {
+                    val clicked = key.isNotEmpty() &&
+                        NotificationListener.instance?.clickNotification(key) == true
+                    if (clicked) {
+                        Log.i(TAG, "opened notification via content intent: $key")
+                    } else {
+                        launchApp(ctx, packageName)
+                    }
                 }
             }
         }
+
+        // 锁屏状态下启动的界面会被系统压在锁屏后面（Task.visible=false），
+        // 解锁后也不会自动跳到前台。所以干脆等解锁那一刻再启动 ——
+        // 用户体验就是：屏幕亮起 → 解锁 → 直接落在对应会话上。
+        if (isKeyguardLocked(ctx)) {
+            Log.i(TAG, "keyguard locked, will open after unlock")
+            runAfterUnlock(ctx, open)
+        } else {
+            open()
+        }
         return true
+    }
+
+    /** 屏幕是否处于锁屏状态（熄屏但没设锁屏时不算）。 */
+    private fun isKeyguardLocked(ctx: Context): Boolean {
+        return try {
+            val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            km.isKeyguardLocked
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 等用户解锁：收到 USER_PRESENT 就执行 [action]，超时则放弃。 */
+    private fun runAfterUnlock(ctx: Context, action: () -> Unit) {
+        cancelPendingOpen()
+
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != Intent.ACTION_USER_PRESENT) return
+                val pending = pendingOpenAction
+                cancelPendingOpen()
+                pending?.invoke()
+            }
+        }
+
+        val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                ctx.registerReceiver(receiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "register user-present receiver failed", e)
+            return
+        }
+
+        pendingOpenReceiver = receiver
+        pendingOpenAction = action
+
+        // 一直不解锁就放弃，别把 receiver 挂在那儿
+        mainHandler.postDelayed(cancelPendingOpenRunnable, UNLOCK_WAIT_TIMEOUT_MS)
+    }
+
+    private fun cancelPendingOpen() {
+        mainHandler.removeCallbacks(cancelPendingOpenRunnable)
+        pendingOpenReceiver?.let {
+            try {
+                appContext?.unregisterReceiver(it)
+            } catch (e: Exception) {
+                // 已经反注册过就忽略
+            }
+        }
+        pendingOpenReceiver = null
+        pendingOpenAction = null
+    }
+
+    private val cancelPendingOpenRunnable = Runnable { cancelPendingOpen() }
+
+    private var pendingOpenReceiver: BroadcastReceiver? = null
+    private var pendingOpenAction: (() -> Unit)? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * 熄屏 / 锁屏时把屏幕点亮，让用户看到锁屏界面。
+     *
+     * 只负责亮屏，不碰解锁：目标界面会被系统放在锁屏后面，用户解锁后直接就能看到，
+     * 替别人解锁既做不到（没有密码）也没必要。
+     *
+     * FULL_WAKE_LOCK 虽然标了废弃，但普通应用能用的「点亮屏幕」手段就它和
+     * setTurnScreenOn（只能管内自己的 Activity），这里只能用它。
+     * 加了超时，到点系统自动释放，不需要手动 release。
+     */
+    private fun wakeScreenIfNeeded(ctx: Context) {
+        try {
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (pm.isInteractive) return
+
+            @Suppress("DEPRECATION")
+            val lock = pm.newWakeLock(
+                PowerManager.FULL_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                "Message:openNotification"
+            )
+            lock.acquire(SCREEN_WAKE_TIMEOUT_MS)
+            Log.i(TAG, "screen woke up for open notification")
+        } catch (e: Exception) {
+            Log.w(TAG, "wake screen failed", e)
+        }
     }
 
     /** 按包名启动应用（通知已经没了的兜底）。 */

@@ -164,6 +164,14 @@ Android 15 起，应用从后台启动界面会被系统一律拦下（`BAL_BLOC
 
 > 顺带踩过的坑：`getLaunchIntentForPackage()` 在 Android 11+ 会因为「包可见性」返回 `null`，需要在 Manifest 里声明 `<queries>`（本项目声明的是「带桌面入口的应用」），否则同样表现为点了没反应。
 
+### 手机锁屏 / 熄屏时
+
+点电脑上的通知，手机会先**点亮屏幕**停在锁屏界面；你解锁的那一刻，目标界面才真正启动，解锁完直接落在对应会话上。
+
+不在锁屏时就启动的原因是：Android 15 的 BAL 只放行「启动」，不放行「提到前台」——锁屏状态下启动的界面会被系统压在锁屏后面（`Task.visible=false`），解锁后也不会自己跳出来，用户会以为没反应。所以锁屏时只亮屏 + 注册一个 `ACTION_USER_PRESENT` 广播，等解锁再动手；60 秒没解锁就放弃这次请求。
+
+亮屏用的是 `FULL_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP`（带 10 秒超时，到点自动释放）。它虽然被标记为废弃，但普通应用能用的「点亮屏幕」手段就它和 `setTurnScreenOn`（只能管自己的 Activity），这里只能用它。
+
 ## 与 KDE Connect 的实现对照
 
 ## 构建
@@ -237,6 +245,7 @@ cd android
 - 安卓端：`gradlew :app:assembleDebug` 构建产物 APK。
 - 实时通知页：实测实时新增/更新、`isCancel` 移除、断连清空、重连批量补发；`清空手机通知` 后列表清空。
 - 点击打开：HyperOS 3 / Android 16 实测 —— 点电脑上的微信群消息通知，手机微信直接打开对应群聊（不是首页）；通知消失后退化为按包名打开应用。未授予「显示在其他应用的上层」时系统日志为 `BAL_BLOCK`（点了没反应），授予后变为 `BAL_ALLOW_SAW_PERMISSION` 并正常启动。
+- 锁屏：熄屏锁屏状态下点击，实测 `mWakefulness: Dozing → Awake`、`isKeyguardShowing: true → false`，解锁后前台落到 `SmartHomeMainActivity`（即通知点击后的目标界面）；日志依次为 `screen woke up` → `keyguard locked, will open after unlock` → `opened notification via content intent`。
 - 两个开关：电脑端拨动 → `config.json` 落盘 + 手机收到 `state.windowsToast`；手机拨动 → 电脑 `config.json` 同步更新；电脑端拨勿扰 → 手机 `zen_mode` 在 `ZEN_MODE_OFF` ↔ `ZEN_MODE_IMPORTANT_INTERRUPTIONS` 之间切换，并回传 `state.interruptionFilter`。
 - 气泡开关关闭时，通知仍写入 `messages.json` 历史，只是不弹 Toast。
 - WinUI 3 界面：无 Visual Studio 的 `dotnet build` 构建通过（`resources.pri` 由构建后步骤生成）；主窗口 Mica 背景 + 自定义标题栏 + `SelectorBar` 双页切换均已实测；`AppWindow.Closing` 拦下关闭请求后窗口隐藏、进程继续常驻，再次启动 exe 会通过门铃把窗口唤出。
