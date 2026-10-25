@@ -56,6 +56,9 @@ class BridgeClient(private val context: Context, private val listener: Listener)
 
         /** 电脑端上报的 Windows 气泡开关状态 */
         fun onWindowsToastState(enable: Boolean)
+
+        /** 电脑端点了某条通知：key 可能已失效，packageName 用于退化成打开应用 */
+        fun onOpenNotificationRequested(key: String, packageName: String)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -216,6 +219,13 @@ class BridgeClient(private val context: Context, private val listener: Listener)
             BridgeProtocol.TYPE_COMMAND_SET_WINDOWS_TOAST -> {
                 val body = packet.optJSONObject("body")
                 listener.onWindowsToastRequested(body?.optBoolean("enable", true) ?: true)
+            }
+            BridgeProtocol.TYPE_COMMAND_OPEN_NOTIFICATION -> {
+                val body = packet.optJSONObject("body")
+                listener.onOpenNotificationRequested(
+                    body?.optString("id") ?: "",
+                    body?.optString("packageName") ?: ""
+                )
             }
         }
     }

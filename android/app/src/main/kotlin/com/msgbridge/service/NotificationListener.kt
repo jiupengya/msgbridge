@@ -1,8 +1,10 @@
 package com.msgbridge.service
 
+import android.app.ActivityOptions
 import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
@@ -135,6 +137,57 @@ class NotificationListener : NotificationListenerService() {
             Log.i(TAG, "cancelAllNotifications called")
         } catch (e: Exception) {
             Log.w(TAG, "clear all notifications failed", e)
+        }
+    }
+
+    /**
+     * 电脑端点了某条通知：用它自带的 contentIntent 模拟一次点击。
+     *
+     * contentIntent 由发出通知的应用创建，里面带着「跳到哪个会话」的信息，
+     * 所以效果和在手机上直接点这条通知一样。通知已经不在通知栏里就返回 false，
+     * 由调用方退化成按包名打开应用。
+     */
+    fun clickNotification(key: String): Boolean {
+        val sbn = try {
+            activeNotifications?.firstOrNull { it.key == key }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "clickNotification: read active notifications failed", e)
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "clickNotification: read active notifications failed", e)
+            null
+        } ?: run {
+            Log.w(TAG, "clickNotification: notification $key is gone")
+            return false
+        }
+
+        val pendingIntent = sbn.notification.contentIntent ?: run {
+            Log.w(TAG, "clickNotification: $key has no content intent")
+            return false
+        }
+
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14 起默认禁止应用从后台借 PendingIntent 拉起界面，
+                // 不显式声明「允许后台启动」的话 send() 会静默失败（不抛异常、什么也不发生）。
+                val options = ActivityOptions.makeBasic().apply {
+                    setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                    )
+                }
+                pendingIntent.send(this, 0, null, null, null, null, options.toBundle())
+            } else {
+                pendingIntent.send()
+            }
+            true
+        } catch (e: PendingIntent.CanceledException) {
+            // 应用已经把 PendingIntent 取消了（通知早就该消失了）
+            Log.w(TAG, "clickNotification: content intent canceled for $key", e)
+            false
+        } catch (e: Exception) {
+            // 后台启动 Activity 被限制时也可能走到这里
+            Log.w(TAG, "clickNotification: send content intent failed for $key", e)
+            false
         }
     }
 

@@ -20,6 +20,8 @@ import org.json.JSONObject
  *  - command.clearNotifications      电脑 -> 手机：清空可清除的通知（常驻通知清不掉）
  *  - command.setInterruptionFilter   电脑 -> 手机：设置勿扰（filter: 0=开启勿扰, 2=关闭勿扰）
  *  - command.setWindowsToast         双向：修改 Windows 气泡开关（enable: bool）
+ *  - command.openNotification        电脑 -> 手机：用户点了电脑上的某条通知，
+ *                                    让手机打开它（body: id=通知 key / packageName）
  *  - state.interruptionFilter        手机 -> 电脑：手机勿扰状态（filter / canSet）
  *  - state.windowsToast              电脑 -> 手机：Windows 气泡开关状态（enable）
  *  - ping / pong                     双向保活
@@ -40,6 +42,9 @@ object BridgeProtocol {
 
     /** 双向：修改 Windows 气泡开关 */
     const val TYPE_COMMAND_SET_WINDOWS_TOAST = "command.setWindowsToast"
+
+    /** 电脑 -> 手机：打开某条通知对应的界面（id 为空或通知已消失时退化成打开应用） */
+    const val TYPE_COMMAND_OPEN_NOTIFICATION = "command.openNotification"
 
     /** 手机 -> 电脑：上报勿扰状态 */
     const val TYPE_STATE_INTERRUPTION_FILTER = "state.interruptionFilter"

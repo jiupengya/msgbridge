@@ -97,6 +97,26 @@ public sealed class MessageRouter
             new JsonObject { ["enable"] = enable }));
     }
 
+    /// <summary>
+    /// 让手机打开某条通知：手机上还挂着就模拟点击它（跳到对应会话），
+    /// 已经消失就退化成按包名打开应用。
+    /// </summary>
+    /// <param name="key">手机端的通知 key；历史记录里的旧消息传空串。</param>
+    public bool SendOpenNotification(string key, string packageName)
+    {
+        var conn = PairedConnection;
+        if (conn == null) return false;
+        if (string.IsNullOrEmpty(key) && string.IsNullOrEmpty(packageName)) return false;
+
+        return conn.Send(Packet.Create(
+            Packet.Types.CommandOpenNotification,
+            new JsonObject
+            {
+                ["id"] = key ?? "",
+                ["packageName"] = packageName ?? ""
+            }));
+    }
+
     private void OnDisconnected(BridgeConnection conn)
     {
         if (conn.DeviceId != null)

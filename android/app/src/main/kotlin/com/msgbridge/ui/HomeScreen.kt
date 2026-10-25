@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
@@ -407,10 +408,18 @@ private fun PermissionsCard(context: Context) {
 
     val canSetDnd by BridgeController.canSetDnd.collectAsState()
 
+    // 从系统设置页返回时要重新判断，否则一直显示「去授权」
+    val overlayLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { permissionTick++ }
+
     val hasNotifListener = NotificationListener.hasReadNotificationsPermission(context)
     val hasPostNotif = Build.VERSION.SDK_INT < 33 ||
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
         PackageManager.PERMISSION_GRANTED
+    val hasOverlay = remember(permissionTick) {
+        runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
+    }
 
     // 权限变更后刷新
     remember(permissionTick) {
@@ -454,6 +463,22 @@ private fun PermissionsCard(context: Context) {
                 onClick = {
                     runCatching {
                         context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                    }
+                }
+            )
+            // 不是用来画悬浮窗的：Android 15 起「从后台打开应用」只有这一种用户可授权的豁免
+            PermissionRow(
+                title = "显示在其他应用的上层",
+                subtitle = "在电脑上点一条通知时，手机才能直接打开对应应用",
+                granted = hasOverlay,
+                onClick = {
+                    runCatching {
+                        overlayLauncher.launch(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                        )
                     }
                 }
             )

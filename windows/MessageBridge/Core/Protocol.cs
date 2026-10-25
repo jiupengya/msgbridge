@@ -24,6 +24,8 @@ public sealed class Packet
         public const string CommandSetInterruptionFilter = "command.setInterruptionFilter";
         /// <summary>双向：手机或电脑任一端修改 Windows 气泡开关。</summary>
         public const string CommandSetWindowsToast = "command.setWindowsToast";
+        /// <summary>电脑 -> 手机：打开某条通知对应的界面（通知已消失时退化成打开应用）。</summary>
+        public const string CommandOpenNotification = "command.openNotification";
 
         // 状态上报
         /// <summary>手机 -> 电脑：手机当前勿扰状态。</summary>

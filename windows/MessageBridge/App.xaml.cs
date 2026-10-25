@@ -178,6 +178,7 @@ public partial class App : Application
         _mainWindow.ToastSwitchToggled += SetWindowsToast;
         _mainWindow.InterruptionFilterToggled += OnLocalDndToggle;
         _mainWindow.ClearPhoneNotificationsRequested += OnClearPhoneNotifications;
+        _mainWindow.OpenOnPhoneRequested += OnOpenOnPhone;
 
         // 静默启动：默认不显示主窗口，只常驻托盘。
         // 想看通知/历史从托盘左键打开。
@@ -392,6 +393,22 @@ public partial class App : Application
     private void OnClearPhoneNotifications()
     {
         _router?.SendClearNotifications();
+    }
+
+    /// <summary>
+    /// 电脑上点了某条通知：让手机去打开。
+    /// 手机端优先模拟点击那条通知（跳到对应会话），通知没了就退化成打开应用。
+    /// </summary>
+    private void OnOpenOnPhone(MainWindow.OpenRequest request)
+    {
+        if (_router?.SendOpenNotification(request.Key, request.PackageName) != true)
+        {
+            _mainWindow?.ShowHint("手机未连接，无法打开", error: true);
+            return;
+        }
+
+        var name = string.IsNullOrEmpty(request.DisplayName) ? "应用" : request.DisplayName;
+        _mainWindow?.ShowHint($"已让手机打开 {name}");
     }
 
     private void OnServerDisconnected(BridgeConnection conn)

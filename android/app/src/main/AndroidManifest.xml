@@ -15,6 +15,27 @@
     <!-- 读取勿扰（免打扰）状态：免打扰开启时暂停推送 -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
+    <!--
+      「显示在其他应用的上层」（悬浮窗）。
+      不是用来画悬浮窗的：电脑上点一条通知要在手机上打开对应应用，走的是
+      「从后台启动界面」。Android 15 起系统一律拦这种启动，唯一的用户可授权
+      豁免就是这条权限（系统日志里叫 BAL_ALLOW_SAW_PERMISSION）。
+      没有它的话点击会被系统静默丢弃，应用连异常都收不到。
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
+      包可见性：Android 11 起应用默认「看不见」别的应用，
+      getLaunchIntentForPackage() 会直接返回 null，按包名打开应用就失效了。
+      这里只声明「带桌面入口的应用」，够用，也不必申请敏感的 QUERY_ALL_PACKAGES。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".App"
         android:allowBackup="true"

@@ -87,6 +87,9 @@ public sealed class MessageItem
             Kind = "notification",
             Time = body["time"]?.GetValue<long>() ?? DateTimeOffset.Now.ToUnixTimeMilliseconds(),
             Source = body["appName"]?.GetValue<string>() ?? body["packageName"]?.GetValue<string>() ?? "未知应用",
+            // 之前漏了这行：历史记录只能显示，重启后靠包名找回图标，
+            // 现在还要靠它「点击后在手机上打开对应应用」。
+            PackageName = body["packageName"]?.GetValue<string>() ?? "",
             Title = body["title"]?.GetValue<string>() ?? "",
             Content = body["text"]?.GetValue<string>() ?? "",
             Silent = body["silent"]?.GetValue<bool>() ?? false,

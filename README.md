@@ -57,6 +57,7 @@ msgbridge/
 | `command.clearNotifications` | 电脑 → 手机 | 清空手机通知栏（`cancelAllNotifications`，常驻通知系统本来也不允许清） |
 | `command.setInterruptionFilter` | 电脑 → 手机 | 设置手机勿扰（`filter`: 0=开启勿扰, 2=关闭勿扰） |
 | `command.setWindowsToast` | 双向 | 修改 Windows 气泡开关（`enable`: bool） |
+| `command.openNotification` | 电脑 → 手机 | 打开某条通知对应的界面（`id` = 手机端通知 key，`packageName` 兜底；见「点击通知，在手机上打开」） |
 | `state.interruptionFilter` | 手机 → 电脑 | 上报手机勿扰状态（`filter` 同上，`canSet` 表示是否有权限修改） |
 | `state.windowsToast` | 电脑 → 手机 | 上报 Windows 气泡开关状态（`enable`） |
 | `ping` / `pong` | 双向 | 保活 |
@@ -65,6 +66,7 @@ msgbridge/
 {"protoVer":1,"type":"command.clearNotifications","id":1760000000003,"body":{}}
 {"protoVer":1,"type":"command.setInterruptionFilter","id":1760000000004,"body":{"filter":2}}
 {"protoVer":1,"type":"command.setWindowsToast","id":1760000000005,"body":{"enable":true}}
+{"protoVer":1,"type":"command.openNotification","id":1760000000008,"body":{"id":"0|com.tencent.mm|123|null|10286","packageName":"com.tencent.mm"}}
 {"protoVer":1,"type":"state.interruptionFilter","id":1760000000006,"body":{"filter":2,"canSet":true}}
 {"protoVer":1,"type":"state.windowsToast","id":1760000000007,"body":{"enable":true}}
 ```
@@ -138,6 +140,26 @@ msgbridge/
 - 只包含手机通知栏里用户真正看得见的通知（常驻通知已在手机端过滤掉）
 - **图标/名称兜底**：连接后批量补发时，手机端对部分「挂了一段时间」的通知拿不到图标、应用名也会退化成包名。电脑端会用之前正常推送时记下的「包名 → 应用名 + 图标」补上（存在 `messages.json` 里，重启后依然有效）。
 
+## 点击通知，在手机上打开
+
+两页都可以点：点**实时通知**里的某条，手机会打开那条通知对应的应用；点**历史记录**里的某条，手机打开那条消息对应的应用。窗口底部会弹一条 `已让手机打开 XX` 的提示。
+
+协议上很简单，电脑发一条 `command.openNotification`（`id` = 手机端通知 key，`packageName` 兜底）：
+
+- **Android 14 及更早**：手机端找到还挂着的那条通知，`send()` 它自带的 `contentIntent`，效果等于在手机上点这条通知，能直接跳到对应聊天窗口 / 详情页。
+- **Android 15 起**：不再走 `contentIntent` —— 后台启动界面的限制收紧了，判定用的是「PendingIntent 的创建者」（发通知的那个应用，比如小米推送进程）而不是我们，`send()` 会被系统静默丢掉；这时直接按 `packageName` 启动应用。
+
+### 需要「显示在其他应用的上层」权限
+
+Android 15 起，应用从后台启动界面会被系统一律拦下（`BAL_BLOCK`），**连异常都不给**，表现就是「点了没反应」。用户能给的唯一豁免就是这个权限（系统日志里叫 `BAL_ALLOW_SAW_PERMISSION`）：
+
+- 手机 App → 权限卡片 → **显示在其他应用的上层** → 去授权
+- 路径：设置 → 应用设置 → 应用管理 → Message → 其他权限 → 显示在其他应用的上层
+
+它不是用来画悬浮窗的。系统判定时还要求「当前真的有叠加窗口」（`hasNonAppVisibleWindow`），所以真正启动前会临时挂一个 `1x1` 的全透明 `TYPE_APPLICATION_OVERLAY` 窗口，等 `system_server` 把这个窗口记到本应用名下（约 120 ms）再 `startActivity`，启动后 500 ms 摘掉。没有这个权限就只能硬试，多半被系统拦掉。
+
+> 顺带踩过的坑：`getLaunchIntentForPackage()` 在 Android 11+ 会因为「包可见性」返回 `null`，需要在 Manifest 里声明 `<queries>`（本项目声明的是「带桌面入口的应用」），否则同样表现为点了没反应。
+
 ## 与 KDE Connect 的实现对照
 
 ## 构建
@@ -194,7 +216,7 @@ cd android
 **手机端**
 1. 安装 APK，打开「Message」。
 2. 填写电脑 IP 与端口（默认 17001），开启「推送服务」。
-3. 按提示授予权限：**通知使用权**（推送通知必需）、**通知显示**（Android 13+ 显示常驻通知）、**勿扰访问权限**（电脑远程开关勿扰必需）、**忽略电池优化**。
+3. 按提示授予权限：**通知使用权**（推送通知必需）、**通知显示**（Android 13+ 显示常驻通知）、**勿扰访问权限**（电脑远程开关勿扰必需）、**显示在其他应用的上层**（在电脑上点通知时直接打开应用必需，见上文）、**忽略电池优化**。
 4. 连接后输入电脑端显示的 PIN 完成配对。
 5. 之后手机的通知会自动推送到电脑（是否弹气泡看电脑侧的开关）。
 6. 「系统开关」里可以直接改「电脑系统通知（气泡）」和「手机勿扰」，状态跟电脑实时同步。
@@ -210,6 +232,7 @@ cd android
 - Windows 端：`dotnet build` 0 警告 0 错误；`smoke_test.py` 已跑通 `ping→pong`、信任设备放行、通知收包与持久化全链路（`isCancel` 通知不落盘）。
 - 安卓端：`gradlew :app:assembleDebug` 构建产物 APK。
 - 实时通知页：实测实时新增/更新、`isCancel` 移除、断连清空、重连批量补发；`清空手机通知` 后列表清空。
+- 点击打开：HyperOS 3 / Android 16 实测 —— 点实时通知与历史记录都能在手机上打开对应应用；未授予「显示在其他应用的上层」时系统日志为 `BAL_BLOCK`（点了没反应），授予后变为 `BAL_ALLOW_SAW_PERMISSION` 并正常启动。
 - 两个开关：电脑端拨动 → `config.json` 落盘 + 手机收到 `state.windowsToast`；手机拨动 → 电脑 `config.json` 同步更新；电脑端拨勿扰 → 手机 `zen_mode` 在 `ZEN_MODE_OFF` ↔ `ZEN_MODE_IMPORTANT_INTERRUPTIONS` 之间切换，并回传 `state.interruptionFilter`。
 - 气泡开关关闭时，通知仍写入 `messages.json` 历史，只是不弹 Toast。
 - WinUI 3 界面：无 Visual Studio 的 `dotnet build` 构建通过（`resources.pri` 由构建后步骤生成）；主窗口 Mica 背景 + 自定义标题栏 + `SelectorBar` 双页切换均已实测；`AppWindow.Closing` 拦下关闭请求后窗口隐藏、进程继续常驻，再次启动 exe 会通过门铃把窗口唤出。

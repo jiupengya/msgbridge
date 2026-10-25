@@ -3,6 +3,7 @@ using System.Threading;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using MessageBridge.Core;
 using Windows.Graphics;
@@ -39,6 +40,17 @@ public sealed partial class MainWindow : Window
     public event Action<int>? InterruptionFilterToggled;
     /// <summary>点了「清空手机通知」。</summary>
     public event Action? ClearPhoneNotificationsRequested;
+
+    /// <summary>点了列表里的某条通知，请求在手机上打开它。</summary>
+    public event Action<OpenRequest>? OpenOnPhoneRequested;
+
+    /// <summary>
+    /// 一次「在手机上打开」的请求。
+    /// <paramref name="Key"/> 是手机端通知 key（历史记录没有，传空串），
+    /// <paramref name="PackageName"/> 用于通知已消失时退化成打开应用，
+    /// <paramref name="DisplayName"/> 只用于界面反馈。
+    /// </summary>
+    public sealed record OpenRequest(string Key, string PackageName, string DisplayName);
 
     public MainWindow(MessageStore store, SnapshotStore snapshot, int port, BridgeServer server)
     {
@@ -187,6 +199,53 @@ public sealed partial class MainWindow : Window
         if (_suppressLiveEvents) return;
         ClearPhoneNotificationsRequested?.Invoke();
     }
+
+    // ---- 点击列表项 -> 手机上打开 ----
+
+    /// <summary>实时通知：key 有效，手机能直接跳到这条通知对应的会话。</summary>
+    private void OnSnapshotRowTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not SnapshotItem item) return;
+        RequestOpen(item.Key, item.PackageName, item.Source);
+    }
+
+    /// <summary>历史记录：手机上那条通知早就没了，只能按包名打开应用。</summary>
+    private void OnHistoryRowTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not MessageItem item) return;
+        RequestOpen("", item.PackageName, item.Source);
+    }
+
+    private void RequestOpen(string key, string packageName, string displayName)
+    {
+        if (string.IsNullOrEmpty(key) && string.IsNullOrEmpty(packageName))
+        {
+            ShowHint("这条记录没有应用信息，无法在手机上打开", error: true);
+            return;
+        }
+        OpenOnPhoneRequested?.Invoke(new OpenRequest(key, packageName, displayName));
+    }
+
+    /// <summary>底部 InfoBar 提示（几秒后自动收起）。</summary>
+    public void ShowHint(string message, bool error = false)
+    {
+        ActionBar.Severity = error ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
+        ActionBar.Message = message;
+        ActionBar.IsOpen = true;
+
+        // 计时器必须留着字段，否则被 GC 掉就再也不会触发
+        if (_hintTimer == null)
+        {
+            _hintTimer = DispatcherQueue.CreateTimer();
+            _hintTimer.IsRepeating = false;
+            _hintTimer.Tick += (_, _) => ActionBar.IsOpen = false;
+        }
+        _hintTimer.Stop();
+        _hintTimer.Interval = TimeSpan.FromSeconds(3);
+        _hintTimer.Start();
+    }
+
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _hintTimer;
 
     // ---- 视图切换 ----
 

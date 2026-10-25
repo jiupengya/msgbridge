@@ -67,12 +67,14 @@
                                 <Setter Property="Padding" Value="8,0" />
                                 <Setter Property="Margin" Value="0,1" />
                                 <Setter Property="MinHeight" Value="0" />
+                                <Setter Property="ToolTipService.ToolTip" Value="点击后在手机上打开这条通知" />
                             </Style>
                         </ListView.ItemContainerStyle>
 
                         <ListView.ItemTemplate>
                             <DataTemplate x:DataType="core:SnapshotItem">
-                                <Grid Padding="8,8" ColumnSpacing="12">
+                                <Grid Padding="8,8" ColumnSpacing="12" Background="Transparent"
+                                      Tapped="OnSnapshotRowTapped">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
@@ -137,12 +139,14 @@
                             <Setter Property="Padding" Value="8,0" />
                             <Setter Property="Margin" Value="0,1" />
                             <Setter Property="MinHeight" Value="0" />
+                            <Setter Property="ToolTipService.ToolTip" Value="点击后在手机上打开对应的应用" />
                         </Style>
                     </ListView.ItemContainerStyle>
 
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="core:MessageItem">
-                            <Grid Padding="8,10" ColumnSpacing="12">
+                            <Grid Padding="8,10" ColumnSpacing="12" Background="Transparent"
+                                  Tapped="OnHistoryRowTapped">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" />
@@ -184,9 +188,11 @@
             </Grid>
         </Grid>
 
-        <!-- 底部提示 -->
-        <TextBlock Grid.Row="3" Margin="16,10,16,12"
-                   Style="{StaticResource HintTextStyle}"
-                   Text="提示：关闭窗口会最小化到托盘，推送服务继续运行。手机端需与电脑处于同一局域网。" />
+        <!-- 底部：操作反馈 + 提示 -->
+        <StackPanel Grid.Row="3" Margin="16,10,16,12" Spacing="8">
+            <InfoBar x:Name="ActionBar" IsOpen="False" IsClosable="False" />
+            <TextBlock Style="{StaticResource HintTextStyle}"
+                       Text="提示：关闭窗口会最小化到托盘，推送服务继续运行。手机端需与电脑处于同一局域网。" />
+        </StackPanel>
     </Grid>
 </Window>

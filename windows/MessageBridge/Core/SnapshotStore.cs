@@ -40,6 +40,8 @@ public sealed class NotificationUpdate
 public sealed class SnapshotItem : INotifyPropertyChanged
 {
     public string Key { get; init; } = "";
+    /// <summary>应用包名，点击条目时告诉手机打开哪个应用。</summary>
+    public string PackageName { get; set; } = "";
     /// <summary>常驻通知标记，用于面板上的「常驻」角标（当前手机端不推常驻通知，恒为 false）。</summary>
     public bool IsOngoing { get; init; }
 
@@ -123,6 +125,7 @@ public sealed class SnapshotStore
         item.Source = update.Source;
         item.Title = update.Title;
         item.Content = update.Content;
+        if (!string.IsNullOrEmpty(update.PackageName)) item.PackageName = update.PackageName;
         item.TimeText = DateTimeOffset.FromUnixTimeMilliseconds(
             update.Time > 0 ? update.Time : DateTimeOffset.Now.ToUnixTimeMilliseconds())
             .ToLocalTime().ToString("HH:mm:ss");

@@ -2,7 +2,16 @@ package com.msgbridge.core
 
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.graphics.PixelFormat
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import com.msgbridge.service.BridgeService
 import com.msgbridge.service.NotificationListener
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -86,6 +95,10 @@ object BridgeController {
         override fun onWindowsToastState(enable: Boolean) {
             _windowsToast.value = enable
         }
+
+        override fun onOpenNotificationRequested(key: String, packageName: String) {
+            openNotification(key, packageName)
+        }
     }
 
     fun start(context: Context) {
@@ -155,6 +168,138 @@ object BridgeController {
             BridgeProtocol.TYPE_COMMAND_SET_WINDOWS_TOAST,
             JSONObject().put("enable", enable)
         )
+    }
+
+    // ---------------- 打开通知 / 应用 ----------------
+
+    /** 临时叠加窗口挂多久再真正 startActivity（等系统把它记到本应用名下）。 */
+    private const val OVERLAY_ANCHOR_SETTLE_MS = 120L
+
+    /** 启动之后多久摘掉叠加窗口（给启动过程留点余量）。 */
+    private const val OVERLAY_ANCHOR_LINGER_MS = 500L
+
+    /**
+     * 是否有「显示在其他应用的上层」权限。
+     * 不是用来画悬浮窗的，而是「从后台打开应用」唯一能拿到的用户豁免，详见
+     * [startActivityAllowingBackground]。
+     */
+    fun hasOverlayPermission(): Boolean {
+        val ctx = appContext ?: return false
+        return try {
+            Settings.canDrawOverlays(ctx)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 电脑端点了某条通知，让手机打开它。
+     *
+     * 两级策略：
+     *  1. Android 14 及更早：通知还挂着就 send() 它的 contentIntent ——
+     *     效果等于在手机上点这条通知，能跳到对应的聊天窗口/详情页。
+     *  2. 兜底 / Android 15 起：用 packageName 启动应用。
+     *
+     * 为什么 Android 15 起不再走 PendingIntent：后台启动 Activity 的限制收紧了，
+     * 判定用的是「PendingIntent 的创建者」（发通知的那个应用，比如小米推送进程），
+     * 不是我们，所以 send() 会被系统静默拦掉，点了没有任何反应。
+     * 自己 startActivity 才有机会过（配合悬浮窗权限，见 [startActivityAllowingBackground]）。
+     */
+    fun openNotification(key: String, packageName: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM &&
+            key.isNotEmpty() &&
+            NotificationListener.instance?.clickNotification(key) == true
+        ) {
+            Log.i(TAG, "opened notification via content intent: $key")
+            return true
+        }
+        if (packageName.isEmpty()) {
+            Log.w(TAG, "open notification: no key hit and no package name")
+            return false
+        }
+
+        val ctx = appContext ?: return false
+        return try {
+            val intent = ctx.packageManager.getLaunchIntentForPackage(packageName)
+            if (intent == null) {
+                Log.w(TAG, "open notification: no launch intent for $packageName")
+                false
+            } else {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivityAllowingBackground(ctx, intent)
+                Log.i(TAG, "opened app: $packageName")
+                true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "open app failed: $packageName", e)
+            false
+        }
+    }
+
+    /**
+     * 从后台拉起界面。
+     *
+     * Android 15 起「从后台启动界面」被严格限制，光有 SYSTEM_ALERT_WINDOW 权限
+     * 还不够 —— 系统判定的是 `hasNonAppVisibleWindow`（当前是否真的有叠加窗口）。
+     * 所以这里先临时挂一个 1x1 的透明悬浮窗，等系统把它记到本应用名下再 startActivity，
+     * 启动完立刻摘掉。这是目前唯一不需要让用户开无障碍服务的做法。
+     *
+     * 没有这个权限就只能硬试，系统多半会静默拦掉（不抛异常，只在 logcat 里记一笔），
+     * 所以界面那边要引导用户去开。
+     */
+    private fun startActivityAllowingBackground(ctx: Context, intent: Intent) {
+        if (!hasOverlayPermission()) {
+            Log.w(TAG, "no overlay permission, background activity start will likely be blocked")
+            try {
+                ctx.startActivity(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "startActivity failed", e)
+            }
+            return
+        }
+
+        Handler(Looper.getMainLooper()).post {
+            val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val params = WindowManager.LayoutParams(
+                1, 1,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 0
+                y = 0
+            }
+
+            val anchor = View(ctx)
+            val added = try {
+                wm.addView(anchor, params)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "add overlay anchor failed", e)
+                false
+            }
+
+            // 给 system_server 一点时间把窗口记到本应用的 uid 名下
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    ctx.startActivity(intent)
+                } catch (e: Exception) {
+                    Log.w(TAG, "startActivity failed (anchor=$added)", e)
+                }
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (added) {
+                        try {
+                            wm.removeView(anchor)
+                        } catch (e: Exception) {
+                            // 窗口可能已经跟着进程一起回收了
+                        }
+                    }
+                }, OVERLAY_ANCHOR_LINGER_MS)
+            }, if (added) OVERLAY_ANCHOR_SETTLE_MS else 0)
+        }
     }
 
     // ---------------- 手机勿扰 ----------------
