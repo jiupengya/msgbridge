@@ -2,10 +2,8 @@ package com.msgbridge.core
 
 import android.app.KeyguardManager
 import android.app.NotificationManager
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -16,6 +14,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import com.msgbridge.ui.UnlockGateActivity
 import com.msgbridge.service.BridgeService
 import com.msgbridge.service.NotificationListener
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -185,9 +184,6 @@ object BridgeController {
     /** 点亮屏幕用的唤醒锁最长持有时间（到点自动释放，不用手动 release）。 */
     private const val SCREEN_WAKE_TIMEOUT_MS = 10_000L
 
-    /** 锁屏时最多等用户多久解锁，超时就放弃这次打开请求。 */
-    private const val UNLOCK_WAIT_TIMEOUT_MS = 60_000L
-
     /**
      * 是否有「显示在其他应用的上层」权限。
      * 不是用来画悬浮窗的，而是「从后台打开应用」唯一能拿到的用户豁免，详见
@@ -261,57 +257,48 @@ object BridgeController {
         }
     }
 
-    /** 等用户解锁：收到 USER_PRESENT 就执行 [action]，超时则放弃。 */
+    /**
+     * 锁屏时先弹系统解锁界面，解锁通过后再执行 [action]。
+     *
+     * 用 [UnlockGateActivity] 而不是注册 USER_PRESENT 广播：那个只能等用户自己
+     * 「上滑 + 输密码」，这里可以借 requestDismissKeyguard() 把密码键盘直接弹出来，
+     * 少一步操作。而且解锁那一刻中转页就在前台，启动别人的界面不受后台限制。
+     */
     private fun runAfterUnlock(ctx: Context, action: () -> Unit) {
-        cancelPendingOpen()
-
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action != Intent.ACTION_USER_PRESENT) return
-                val pending = pendingOpenAction
-                cancelPendingOpen()
-                pending?.invoke()
-            }
-        }
-
-        val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                ctx.registerReceiver(receiver, filter)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "register user-present receiver failed", e)
-            return
-        }
-
-        pendingOpenReceiver = receiver
         pendingOpenAction = action
-
-        // 一直不解锁就放弃，别把 receiver 挂在那儿
-        mainHandler.postDelayed(cancelPendingOpenRunnable, UNLOCK_WAIT_TIMEOUT_MS)
+        Handler(Looper.getMainLooper()).post {
+            withOverlayAnchor(ctx) {
+                try {
+                    ctx.startActivity(
+                        Intent(ctx, UnlockGateActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "start unlock gate failed", e)
+                    pendingOpenAction = null
+                }
+            }
+        }
     }
 
-    private fun cancelPendingOpen() {
-        mainHandler.removeCallbacks(cancelPendingOpenRunnable)
-        pendingOpenReceiver?.let {
-            try {
-                appContext?.unregisterReceiver(it)
-            } catch (e: Exception) {
-                // 已经反注册过就忽略
-            }
-        }
-        pendingOpenReceiver = null
+    /** 中转页解锁通过：执行挂起的打开动作。 */
+    internal fun onUnlockGatePassed() {
+        val action = pendingOpenAction
+        pendingOpenAction = null
+        action?.invoke()
+    }
+
+    /** 用户取消了系统解锁界面。 */
+    internal fun onUnlockGateCancelled() {
         pendingOpenAction = null
     }
 
-    private val cancelPendingOpenRunnable = Runnable { cancelPendingOpen() }
+    /** 中转页被关掉（按返回 / 被系统回收）：这次打开请求作废。 */
+    internal fun onUnlockGateDismissed() {
+        pendingOpenAction = null
+    }
 
-    private var pendingOpenReceiver: BroadcastReceiver? = null
     private var pendingOpenAction: (() -> Unit)? = null
-
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * 熄屏 / 锁屏时把屏幕点亮，让用户看到锁屏界面。
