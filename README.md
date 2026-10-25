@@ -173,6 +173,8 @@ Android 15 起，应用从后台启动界面会被系统一律拦下（`BAL_BLOC
 不在锁屏时就启动的原因是：Android 15 的 BAL 只放行「启动」，不放行「提到前台」——锁屏状态下启动的界面会被系统压在锁屏后面（`Task.visible=false`），解锁后也不会自己跳出来，用户会以为没反应。
 
 > 为什么不用 `ACTION_USER_PRESENT` 广播：那样只能等用户自己「上滑 + 输密码」，多一步；`requestDismissKeyguard()` 能把密码键盘直接怼到脸上。
+>
+> MIUI 的坑：只写 Manifest 的 `android:showWhenLocked` 不够 —— 系统会打 `MIUILOG- Permission Denied Activity KeyguardLocked` 把页面按在锁屏后面（`invisible launch`），解锁界面根本弹不出来，表现为「亮屏了但什么都不发生」。必须在启动 Intent 上同时带 `FLAG_SHOW_WHEN_LOCKED | FLAG_TURN_SCREEN_ON`（新 SDK 已删这两个常量，只能写字面值 `0x2000` / `0x20`）。
 
 亮屏用的是 `FULL_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP`（带 10 秒超时，到点自动释放）。它虽然被标记为废弃，但普通应用能用的「点亮屏幕」手段就它和 `setTurnScreenOn`（只能管自己的 Activity），这里只能用它。
 

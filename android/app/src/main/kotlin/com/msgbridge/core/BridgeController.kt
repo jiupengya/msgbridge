@@ -181,6 +181,10 @@ object BridgeController {
     /** 启动之后多久摘掉叠加窗口（给启动过程留点余量）。 */
     private const val OVERLAY_ANCHOR_LINGER_MS = 500L
 
+    /** 熄屏/锁屏时把界面顶上去执行 [block]。 */
+    private const val FLAG_SHOW_WHEN_LOCKED_LEGACY = 0x00002000
+    private const val FLAG_TURN_SCREEN_ON_LEGACY = 0x00000020
+
     /** 点亮屏幕用的唤醒锁最长持有时间（到点自动释放，不用手动 release）。 */
     private const val SCREEN_WAKE_TIMEOUT_MS = 10_000L
 
@@ -269,10 +273,18 @@ object BridgeController {
         Handler(Looper.getMainLooper()).post {
             withOverlayAnchor(ctx) {
                 try {
-                    ctx.startActivity(
-                        Intent(ctx, UnlockGateActivity::class.java)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
+                    @Suppress("DEPRECATION")
+                    val intent = Intent(ctx, UnlockGateActivity::class.java)
+                        .addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                // 这两个 flag 虽然早就标了废弃（改用 setShowWhenLocked），
+                                // 但 MIUI 的锁屏校验看的就是 Intent 上的 flag，
+                                // 只写 Activity 属性会被拦成 "Permission Denied Activity KeyguardLocked"。
+                                // 新版 SDK 里常量已删，只能写数值。
+                                FLAG_SHOW_WHEN_LOCKED_LEGACY or
+                                FLAG_TURN_SCREEN_ON_LEGACY
+                        )
+                    ctx.startActivity(intent)
                 } catch (e: Exception) {
                     Log.w(TAG, "start unlock gate failed", e)
                     pendingOpenAction = null
