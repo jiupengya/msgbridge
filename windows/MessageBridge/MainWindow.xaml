@@ -25,68 +25,164 @@
                        Style="{StaticResource HintTextStyle}" />
         </Grid>
 
-        <!-- 工具行 -->
-        <Grid Grid.Row="1" Padding="16,8,16,12">
-            <TextBlock x:Name="CountText" VerticalAlignment="Center"
-                       Style="{StaticResource HintTextStyle}" />
-            <Button x:Name="ClearButton" Content="清空记录" HorizontalAlignment="Right"
-                    Click="OnClearClicked" />
-        </Grid>
+        <!-- 实时通知 / 历史记录 切换 -->
+        <SelectorBar x:Name="ViewSelector" Grid.Row="1" Margin="12,0,12,4"
+                     SelectionChanged="OnViewSelectionChanged">
+            <SelectorBarItem x:Name="LiveTab" Text="实时通知" IsSelected="True" />
+            <SelectorBarItem x:Name="HistoryTab" Text="历史记录" />
+        </SelectorBar>
 
-        <!-- 消息列表 -->
-        <ListView x:Name="MessageList" Grid.Row="2" Margin="8,0,8,0"
-                  SelectionMode="None"
-                  ItemContainerTransitions="{x:Null}">
-            <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem">
-                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    <Setter Property="Padding" Value="8,0" />
-                    <Setter Property="Margin" Value="0,1" />
-                    <Setter Property="MinHeight" Value="0" />
-                </Style>
-            </ListView.ItemContainerStyle>
+        <Grid Grid.Row="2">
 
-            <ListView.ItemTemplate>
-                <DataTemplate x:DataType="core:MessageItem">
-                    <Grid Padding="8,10" ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
+            <!-- ================= 实时通知：手机此刻还挂着的通知 ================= -->
+            <Grid x:Name="LiveView">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-                        <!-- 应用图标 -->
-                        <Border Width="36" Height="36" CornerRadius="8"
-                                Background="{ThemeResource SubtleFillColorSecondaryBrush}">
-                            <Image Source="{x:Bind IconImage}"
-                                   Width="28" Height="28"
-                                   Stretch="UniformToFill" />
-                        </Border>
+                <!-- 两个开关 + 清空手机通知 -->
+                <Grid Grid.Row="0" Padding="16,4,16,10" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <TextBlock Text="{x:Bind Source}"
-                                           Style="{StaticResource ItemTitleStyle}" />
-                                <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                                        CornerRadius="3" Padding="5,0" VerticalAlignment="Center">
-                                    <TextBlock Text="{x:Bind TypeText}" FontSize="10"
-                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <CheckBox x:Name="ToastSwitch" Grid.Column="0" Content="电脑气泡" MinWidth="0"
+                              Checked="OnToastChecked" Unchecked="OnToastUnchecked" />
+                    <CheckBox x:Name="DndSwitch" Grid.Column="1" Content="手机勿扰" MinWidth="0"
+                              Checked="OnDndChecked" Unchecked="OnDndUnchecked" />
+                    <Button x:Name="ClearPhoneButton" Grid.Column="3" Content="清空手机通知"
+                            VerticalAlignment="Center" Click="OnClearPhoneClicked" />
+                </Grid>
+
+                <Grid Grid.Row="1">
+                    <ListView x:Name="SnapshotList" SelectionMode="None" Padding="4,0"
+                              ItemContainerTransitions="{x:Null}">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Padding" Value="8,0" />
+                                <Setter Property="Margin" Value="0,1" />
+                                <Setter Property="MinHeight" Value="0" />
+                            </Style>
+                        </ListView.ItemContainerStyle>
+
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="core:SnapshotItem">
+                                <Grid Padding="8,8" ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- 图标尺寸和 Windows 通知卡片里的 appLogoOverride 对齐 -->
+                                    <Border Width="48" Height="48" CornerRadius="10"
+                                            Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                            VerticalAlignment="Top">
+                                        <Image Source="{x:Bind IconImage, Mode=OneWay}"
+                                               Width="40" Height="40" Stretch="UniformToFill" />
+                                    </Border>
+
+                                    <StackPanel Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="{x:Bind HeaderText, Mode=OneWay}"
+                                                   Style="{StaticResource ItemTitleStyle}" />
+                                        <TextBlock Text="{x:Bind Content, Mode=OneWay}"
+                                                   Style="{StaticResource ItemBodyStyle}"
+                                                   TextWrapping="Wrap" TextTrimming="None" MaxLines="2" />
+                                    </StackPanel>
+
+                                    <TextBlock Grid.Column="2" Text="{x:Bind TimeText, Mode=OneWay}"
+                                               Style="{StaticResource HintTextStyle}"
+                                               VerticalAlignment="Top" />
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+
+                    <!-- 空状态 -->
+                    <StackPanel x:Name="LiveEmptyPanel" HorizontalAlignment="Center"
+                                VerticalAlignment="Center" Spacing="8" IsHitTestVisible="False">
+                        <FontIcon Glyph="&#xE7F4;" FontSize="24"
+                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        <TextBlock x:Name="LiveEmptyText" Text="手机当前没有通知" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+
+            <!-- ================= 历史记录：messages.json ================= -->
+            <Grid x:Name="HistoryView" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Padding="16,4,16,10">
+                    <TextBlock x:Name="CountText" VerticalAlignment="Center"
+                               Style="{StaticResource HintTextStyle}" />
+                    <Button x:Name="ClearButton" Content="清空记录" HorizontalAlignment="Right"
+                            Click="OnClearClicked" />
+                </Grid>
+
+                <ListView x:Name="MessageList" Grid.Row="1" Margin="8,0,8,0"
+                          SelectionMode="None"
+                          ItemContainerTransitions="{x:Null}">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Padding" Value="8,0" />
+                            <Setter Property="Margin" Value="0,1" />
+                            <Setter Property="MinHeight" Value="0" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="core:MessageItem">
+                            <Grid Padding="8,10" ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 应用图标 -->
+                                <Border Width="36" Height="36" CornerRadius="8"
+                                        Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+                                    <Image Source="{x:Bind IconImage}"
+                                           Width="28" Height="28"
+                                           Stretch="UniformToFill" />
                                 </Border>
-                            </StackPanel>
-                            <TextBlock Text="{x:Bind Title}"
-                                       Style="{StaticResource ItemBodyStyle}"
-                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                            <TextBlock Text="{x:Bind Content}"
-                                       Style="{StaticResource ItemBodyStyle}" />
-                        </StackPanel>
 
-                        <TextBlock Grid.Column="2" Text="{x:Bind TimeText}"
-                                   Style="{StaticResource HintTextStyle}"
-                                   VerticalAlignment="Center" />
-                    </Grid>
-                </DataTemplate>
-            </ListView.ItemTemplate>
-        </ListView>
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <TextBlock Text="{x:Bind Source}"
+                                                   Style="{StaticResource ItemTitleStyle}" />
+                                        <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                                CornerRadius="3" Padding="5,0" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind TypeText}" FontSize="10"
+                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        </Border>
+                                    </StackPanel>
+                                    <TextBlock Text="{x:Bind Title}"
+                                               Style="{StaticResource ItemBodyStyle}"
+                                               Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                                    <TextBlock Text="{x:Bind Content}"
+                                               Style="{StaticResource ItemBodyStyle}" />
+                                </StackPanel>
+
+                                <TextBlock Grid.Column="2" Text="{x:Bind TimeText}"
+                                           Style="{StaticResource HintTextStyle}"
+                                           VerticalAlignment="Center" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+        </Grid>
 
         <!-- 底部提示 -->
         <TextBlock Grid.Row="3" Margin="16,10,16,12"

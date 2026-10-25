@@ -27,7 +27,6 @@ public partial class App : Application
     private IconStore? _icons;
     private SnapshotStore? _snapshot;
     private MainWindow? _mainWindow;
-    private SnapshotWindow? _snapshotWindow;
     private PairWindow? _pairWindow;
     private string _dataDir = "";
     private string _configPath = "";
@@ -147,9 +146,9 @@ public partial class App : Application
 
         _tray = new Tray();
         // 托盘事件在托盘自己的 STA 线程上触发，统一转回 UI 线程再动窗口
-        _tray.OpenRequested += () => Ui.TryEnqueue(ShowMainWindow);
+        _tray.OpenRequested += () => Ui.TryEnqueue(() => ShowMainWindow(live: false));
         // 左键是开关：面板已经显示时再点一次就收起
-        _tray.SnapshotRequested += () => Ui.TryEnqueue(ToggleSnapshotPanel);
+        _tray.SnapshotRequested += () => Ui.TryEnqueue(() => ShowMainWindow(live: true));
         _tray.ExitRequested += () => Ui.TryEnqueue(OnTrayExit);
         _tray.PauseToggleRequested += () => Ui.TryEnqueue(OnPauseToggle);
         _tray.StartupToggleRequested += () => Ui.TryEnqueue(OnStartupToggle);
@@ -174,26 +173,28 @@ public partial class App : Application
             return;
         }
 
-        _mainWindow = new MainWindow(_store, _config.Port, _server);
+        _mainWindow = new MainWindow(_store, _snapshot!, _config.Port, _server);
+        // 实时页的两个开关 + 清空手机通知，统一走 App 里的状态与路由
+        _mainWindow.ToastSwitchToggled += SetWindowsToast;
+        _mainWindow.InterruptionFilterToggled += OnLocalDndToggle;
+        _mainWindow.ClearPhoneNotificationsRequested += OnClearPhoneNotifications;
+
         // 静默启动：默认不显示主窗口，只常驻托盘。
-        // 看完历史消息从托盘右键「打开 Message」或双击托盘图标打开。
+        // 想看通知/历史从托盘左键打开。
         ApplySilentStartup();
 
-        // 快照面板提前建好并离屏预热一次，之后弹出才不会抢焦点，也不会因为首次布局慢而闪
-        EnsureSnapshotWindow();
-        _snapshotWindow?.Prewarm();
-
-        // 调试用：带 --snapshot 启动时自动弹一次快照面板
+        // 调试用：带 --live 启动时自动打开窗口并落在「实时通知」页
         // （托盘图标经常被收进溢出区，自动化测试点不到）
         if (Environment.GetCommandLineArgs()
-            .Any(a => string.Equals(a, "--snapshot", StringComparison.OrdinalIgnoreCase)))
+            .Any(a => string.Equals(a, "--live", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(a, "--snapshot", StringComparison.OrdinalIgnoreCase)))
         {
             var timer = Ui.CreateTimer();
             timer.Interval = TimeSpan.FromMilliseconds(1500);
             timer.Tick += (_, _) =>
             {
                 timer.Stop();
-                ShowSnapshotPanel();
+                ShowMainWindow(live: true);
             };
             timer.Start();
         }
@@ -269,9 +270,10 @@ public partial class App : Application
         }
     }
 
-    private void ShowMainWindow()
+    /// <param name="live">true 时打开并落在「实时通知」页，false 时落在「历史记录」页。</param>
+    private void ShowMainWindow(bool live = false)
     {
-        _mainWindow?.ShowFromTray();
+        _mainWindow?.ShowFromTray(live);
     }
 
     private void OnTrayExit()
@@ -282,35 +284,11 @@ public partial class App : Application
         Exit();
     }
 
-    // ---- 实时快照面板 ----
+    // ---- 实时通知（主窗口里的那一页） ----
 
-    private void ShowSnapshotPanel()
+    private void RefreshLiveState()
     {
-        EnsureSnapshotWindow();
-        RefreshSnapshotPanel();
-        _snapshotWindow?.ShowAtTray();
-    }
-
-    /// <summary>托盘左键：显示中则收起，否则弹出。</summary>
-    private void ToggleSnapshotPanel()
-    {
-        EnsureSnapshotWindow();
-        RefreshSnapshotPanel();
-        _snapshotWindow?.Toggle();
-    }
-
-    private void EnsureSnapshotWindow()
-    {
-        if (_snapshot == null || _snapshotWindow != null) return;
-        _snapshotWindow = new SnapshotWindow(_snapshot, _mainWindow);
-        _snapshotWindow.ToastSwitchToggled += SetWindowsToast;
-        _snapshotWindow.InterruptionFilterToggled += OnLocalDndToggle;
-        _snapshotWindow.ClearRequested += OnClearPhoneNotifications;
-    }
-
-    private void RefreshSnapshotPanel()
-    {
-        _snapshotWindow?.SetState(
+        _mainWindow?.SetLiveState(
             _phoneConnected,
             _enableWindowsToast,
             _dndOn,
@@ -379,7 +357,7 @@ public partial class App : Application
         {
             _dndOn = filter == 0;
             _canSetDnd = canSet;
-            RefreshSnapshotPanel();
+            RefreshLiveState();
         });
     }
 
@@ -398,7 +376,7 @@ public partial class App : Application
         _enableWindowsToast = enable;
         SaveConfig();
         _router?.SendWindowsToastState(enable);
-        RefreshSnapshotPanel();
+        RefreshLiveState();
     }
 
     /// <summary>面板上拨动了「手机勿扰」开关：下发指令，等手机上报真实状态。</summary>
@@ -407,7 +385,7 @@ public partial class App : Application
         if (_router?.SendSetInterruptionFilter(filter) != true) return;
         // 乐观更新，手机成功后会回 state.interruptionFilter 纠正
         _dndOn = filter == 0;
-        RefreshSnapshotPanel();
+        RefreshLiveState();
     }
 
     /// <summary>面板上点了「清空手机通知」。</summary>
@@ -424,7 +402,7 @@ public partial class App : Application
             _canSetDnd = false;
             _dndOn = false;
             _snapshot?.Clear(); // 断连即销毁快照，重连时手机重新批量补发
-            RefreshSnapshotPanel();
+            RefreshLiveState();
         });
     }
 
@@ -440,7 +418,7 @@ public partial class App : Application
             _phoneConnected = true;
             // 连接建立后把 Windows 气泡开关状态同步给手机
             _router?.SendWindowsToastState(_enableWindowsToast);
-            RefreshSnapshotPanel();
+            RefreshLiveState();
         });
     }
 
@@ -511,7 +489,7 @@ public partial class App : Application
                 _phoneConnected = true;
                 // 连接建立后把 Windows 气泡开关状态同步给手机
                 _router?.SendWindowsToastState(_enableWindowsToast);
-                RefreshSnapshotPanel();
+                RefreshLiveState();
             }
 
             var text = ok
@@ -599,7 +577,6 @@ public partial class App : Application
         {
             _pauseTimer?.Stop();
             _store?.Flush();
-            _snapshotWindow?.Close();
             _pairWindow?.Close();
             _mainWindow?.Close();
             _tray?.Dispose();

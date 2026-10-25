@@ -10,7 +10,8 @@ using Windows.Graphics;
 namespace MessageBridge;
 
 /// <summary>
-/// 历史消息主窗口（WinUI 3 + Mica 背景 + 自定义标题栏）。
+/// 主窗口：上面是「实时通知」（手机此刻还挂着的通知 + 两个开关），
+/// 下面是「历史记录」（messages.json）。用一个 SelectorBar 切换。
 /// 关闭时隐藏到托盘，不退出进程。
 /// </summary>
 public sealed partial class MainWindow : Window
@@ -19,19 +20,31 @@ public sealed partial class MainWindow : Window
     private static readonly string ActivateBellName = "MessageBridge.MainWindow.Activate.Slot.WinUI";
 
     private const int DesignWidth = 940;
-    private const int DesignHeight = 640;
+    private const int DesignHeight = 700;
 
     private readonly MessageStore _store;
+    private readonly SnapshotStore _snapshot;
     private readonly BridgeServer _server;
     private readonly int _port;
     private EventWaitHandle? _bell;
     private Thread? _bellThread;
     private bool _sized;
 
-    public MainWindow(MessageStore store, int port, BridgeServer server)
+    /// <summary>程序化设置开关状态时不触发事件。</summary>
+    private bool _suppressLiveEvents;
+
+    /// <summary>实时页里改了「电脑气泡」开关。</summary>
+    public event Action<bool>? ToastSwitchToggled;
+    /// <summary>实时页里改了「手机勿扰」开关：0=开启勿扰，2=关闭勿扰。</summary>
+    public event Action<int>? InterruptionFilterToggled;
+    /// <summary>点了「清空手机通知」。</summary>
+    public event Action? ClearPhoneNotificationsRequested;
+
+    public MainWindow(MessageStore store, SnapshotStore snapshot, int port, BridgeServer server)
     {
         InitializeComponent();
         _store = store;
+        _snapshot = snapshot;
         _server = server;
         _port = port;
 
@@ -41,11 +54,15 @@ public sealed partial class MainWindow : Window
         SetTitleBar(AppTitleBar);
 
         MessageList.ItemsSource = store.Messages;
+        SnapshotList.ItemsSource = snapshot.Items;
+
         UpdateCount();
         UpdateStatus();
+        UpdateLiveEmptyState();
 
         // 新消息到达时刷新计数（列表由 ObservableCollection 自动更新）
         store.Messages.CollectionChanged += (_, _) => UpdateCount();
+        snapshot.Changed += UpdateLiveEmptyState;
 
         // 手机连上/断开时刷新右上角状态
         server.Connected += _ => SafeUpdateStatus();
@@ -57,7 +74,7 @@ public sealed partial class MainWindow : Window
         StartActivateListener();
     }
 
-    /// <summary>第一次显示时按屏幕缩放把窗口调成设计尺寸（150% 屏上不能直接写 940x640 物理像素）。</summary>
+    /// <summary>第一次显示时按屏幕缩放把窗口调成设计尺寸（150% 屏上不能直接写 940x700 物理像素）。</summary>
     private void OnFirstActivated(object sender, WindowActivatedEventArgs args)
     {
         if (_sized) return;
@@ -107,6 +124,87 @@ public sealed partial class MainWindow : Window
         CountText.Text = $"最近 {_store.Messages.Count} 条 · 最多保留 {MessageStore.MaxCount} 条";
     }
 
+    // ---- 实时通知 ----
+
+    private void UpdateLiveEmptyState()
+    {
+        var empty = SnapshotList.Items.Count == 0;
+        LiveEmptyPanel.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>刷新实时页的开关与可用状态（断连时远程开关置灰）。</summary>
+    public void SetLiveState(bool connected, bool toastEnabled, bool dndOn, bool canSetDnd)
+    {
+        _suppressLiveEvents = true;
+        try
+        {
+            ToastSwitch.IsEnabled = connected;
+            ToastSwitch.IsChecked = toastEnabled;
+
+            DndSwitch.IsEnabled = connected && canSetDnd;
+            DndSwitch.IsChecked = dndOn;
+
+            ClearPhoneButton.IsEnabled = connected;
+            LiveEmptyText.Text = connected ? "手机当前没有通知" : "手机未连接";
+
+            // 手机没给「勿扰访问权限」时开关是灰的，说清楚为什么，别让人以为点坏了
+            ToolTipService.SetToolTip(DndSwitch, canSetDnd
+                ? "开启后手机不再响铃，通知仍会同步到电脑"
+                : "手机没有授予「勿扰访问权限」，打开手机上的 Message，到权限列表里授予即可");
+        }
+        finally
+        {
+            _suppressLiveEvents = false;
+        }
+    }
+
+    private void OnToastChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressLiveEvents) return;
+        ToastSwitchToggled?.Invoke(true);
+    }
+
+    private void OnToastUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressLiveEvents) return;
+        ToastSwitchToggled?.Invoke(false);
+    }
+
+    private void OnDndChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressLiveEvents) return;
+        InterruptionFilterToggled?.Invoke(0);
+    }
+
+    private void OnDndUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressLiveEvents) return;
+        InterruptionFilterToggled?.Invoke(2);
+    }
+
+    private void OnClearPhoneClicked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressLiveEvents) return;
+        ClearPhoneNotificationsRequested?.Invoke();
+    }
+
+    // ---- 视图切换 ----
+
+    private void OnViewSelectionChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
+    {
+        var live = ReferenceEquals(sender.SelectedItem, LiveTab);
+        LiveView.Visibility = live ? Visibility.Visible : Visibility.Collapsed;
+        HistoryView.Visibility = live ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>切到指定页（托盘左键打开时默认落在实时通知）。</summary>
+    public void SelectLive(bool live)
+    {
+        ViewSelector.SelectedItem = live ? LiveTab : HistoryTab;
+    }
+
+    // ---- 历史记录 ----
+
     private async void OnClearClicked(object sender, RoutedEventArgs e)
     {
         var dialog = new ContentDialog
@@ -125,10 +223,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>把窗口叫到最前面（静默启动后的正常打开方式，也用于托盘双击）。</summary>
-    public void ShowFromTray()
+    /// <summary>把窗口叫到最前面（静默启动后的正常打开方式，也用于托盘点击）。</summary>
+    public void ShowFromTray(bool live = false)
     {
         if (!AppWindow.IsVisible) AppWindow.Show();
+        SelectLive(live);
         Activate();
 
         // Activate 在从托盘唤起时不总能拿到前台焦点，补一次 Win32 调用
@@ -178,7 +277,7 @@ public sealed partial class MainWindow : Window
                     return; // 窗口已关闭
                 }
 
-                App.Ui?.TryEnqueue(ShowFromTray);
+                App.Ui?.TryEnqueue(() => ShowFromTray(live: true));
             }
         })
         {

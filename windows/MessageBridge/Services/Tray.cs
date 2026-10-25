@@ -29,14 +29,14 @@ public sealed class Tray : IDisposable
 
     public event Action? OpenRequested;
     public event Action? ExitRequested;
-    /// <summary>左键单击：弹出实时通知快照面板。</summary>
+    /// <summary>左键单击：打开主窗口的「实时通知」页。</summary>
     public event Action? SnapshotRequested;
     /// <summary>点击「暂停推送 / 恢复推送」。</summary>
     public event Action? PauseToggleRequested;
     /// <summary>点击「开机自启」。</summary>
     public event Action? StartupToggleRequested;
 
-    /// <summary>左键单击后要等过双击窗口期，避免双击时也顺带弹出快照面板。</summary>
+    /// <summary>左键单击后要等过双击窗口期，避免双击时也顺带触发一次单击。</summary>
     private bool _singleClickPending;
 
     public Tray()
@@ -106,7 +106,7 @@ public sealed class Tray : IDisposable
         _icon.ContextMenuStrip = menu;
         _icon.BalloonTipClicked += (_, _) => OpenRequested?.Invoke();
 
-        // 左键单击 -> 快照面板；双击 -> 主窗口。
+        // 左键单击 -> 主窗口的「实时通知」页；双击 -> 也是主窗口（落在同一页）。
         // NotifyIcon 双击时也会先触发 MouseClick，所以单击要等过双击窗口期才生效。
         _icon.MouseClick += (_, e) =>
         {
