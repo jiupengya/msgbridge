@@ -142,12 +142,14 @@ msgbridge/
 
 ## 点击通知，在手机上打开
 
-两页都可以点：点**实时通知**里的某条，手机会打开那条通知对应的应用；点**历史记录**里的某条，手机打开那条消息对应的应用。窗口底部会弹一条 `已让手机打开 XX` 的提示。
+两页都可以点，点完之后手机上的效果和在手机上点那条通知一致：**实时通知**里点微信群消息会直接进那个群聊；**历史记录**里的通知在手机上早就消失了，只能打开对应应用。窗口底部会弹一条 `已让手机打开 XX` 的提示。
 
 协议上很简单，电脑发一条 `command.openNotification`（`id` = 手机端通知 key，`packageName` 兜底）：
 
-- **Android 14 及更早**：手机端找到还挂着的那条通知，`send()` 它自带的 `contentIntent`，效果等于在手机上点这条通知，能直接跳到对应聊天窗口 / 详情页。
-- **Android 15 起**：不再走 `contentIntent` —— 后台启动界面的限制收紧了，判定用的是「PendingIntent 的创建者」（发通知的那个应用，比如小米推送进程）而不是我们，`send()` 会被系统静默丢掉；这时直接按 `packageName` 启动应用。
+- **通知还挂在通知栏上**：手机端 `send()` 它自带的 `contentIntent`，效果等于在手机上点这条通知 —— 微信会直接跳进对应聊天窗口，不是停在首页。
+- **通知已经没了**（历史记录里的旧消息、或者被别的通知顶掉）：按 `packageName` 打开应用。
+
+两条路都必须先挂那个 1×1 的透明叠加窗口（见下文），`PendingIntent.send()` 也不例外：Android 15 的判定看的是「发送方当前有没有叠加窗口」（`realCallingUidHasNonAppVisibleWindow`），没有就是 `BAL_BLOCK`，有就放行。
 
 ### 需要「显示在其他应用的上层」权限
 
@@ -232,7 +234,7 @@ cd android
 - Windows 端：`dotnet build` 0 警告 0 错误；`smoke_test.py` 已跑通 `ping→pong`、信任设备放行、通知收包与持久化全链路（`isCancel` 通知不落盘）。
 - 安卓端：`gradlew :app:assembleDebug` 构建产物 APK。
 - 实时通知页：实测实时新增/更新、`isCancel` 移除、断连清空、重连批量补发；`清空手机通知` 后列表清空。
-- 点击打开：HyperOS 3 / Android 16 实测 —— 点实时通知与历史记录都能在手机上打开对应应用；未授予「显示在其他应用的上层」时系统日志为 `BAL_BLOCK`（点了没反应），授予后变为 `BAL_ALLOW_SAW_PERMISSION` 并正常启动。
+- 点击打开：HyperOS 3 / Android 16 实测 —— 点电脑上的微信群消息通知，手机微信直接打开对应群聊（不是首页）；通知消失后退化为按包名打开应用。未授予「显示在其他应用的上层」时系统日志为 `BAL_BLOCK`（点了没反应），授予后变为 `BAL_ALLOW_SAW_PERMISSION` 并正常启动。
 - 两个开关：电脑端拨动 → `config.json` 落盘 + 手机收到 `state.windowsToast`；手机拨动 → 电脑 `config.json` 同步更新；电脑端拨勿扰 → 手机 `zen_mode` 在 `ZEN_MODE_OFF` ↔ `ZEN_MODE_IMPORTANT_INTERRUPTIONS` 之间切换，并回传 `state.interruptionFilter`。
 - 气泡开关关闭时，通知仍写入 `messages.json` 历史，只是不弹 Toast。
 - WinUI 3 界面：无 Visual Studio 的 `dotnet build` 构建通过（`resources.pri` 由构建后步骤生成）；主窗口 Mica 背景 + 自定义标题栏 + `SelectorBar` 双页切换均已实测；`AppWindow.Closing` 拦下关闭请求后窗口隐藏、进程继续常驻，再次启动 exe 会通过门铃把窗口唤出。
