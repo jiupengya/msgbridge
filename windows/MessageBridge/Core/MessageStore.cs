@@ -19,6 +19,12 @@ public sealed class MessageItem
     public string Source { get; init; } = "";
 
     /// <summary>
+    /// 手机端通知 key。点 Windows 系统通知（Toast）时靠它精确跳到对应会话；
+    /// 通知早就没了的旧记录留着也无妨，手机端会退化成按包名打开应用。
+    /// </summary>
+    public string Key { get; init; } = "";
+
+    /// <summary>
     /// 应用包名。历史里存一份，重启后就能按包名找回应用名和图标
     /// （手机端补发通知时经常只给包名、不带图标）。
     /// </summary>
@@ -87,6 +93,7 @@ public sealed class MessageItem
             Kind = "notification",
             Time = body["time"]?.GetValue<long>() ?? DateTimeOffset.Now.ToUnixTimeMilliseconds(),
             Source = body["appName"]?.GetValue<string>() ?? body["packageName"]?.GetValue<string>() ?? "未知应用",
+            Key = body["id"]?.GetValue<string>() ?? "",
             // 之前漏了这行：历史记录只能显示，重启后靠包名找回图标，
             // 现在还要靠它「点击后在手机上打开对应应用」。
             PackageName = body["packageName"]?.GetValue<string>() ?? "",
@@ -133,6 +140,7 @@ public sealed class MessageStore
         public string Kind { get; set; } = "notification";
         public long Time { get; set; }
         public string Source { get; set; } = "";
+        public string Key { get; set; } = "";
         public string PackageName { get; set; } = "";
         public string Title { get; set; } = "";
         public string Content { get; set; } = "";
@@ -163,6 +171,7 @@ public sealed class MessageStore
                     Kind = string.IsNullOrEmpty(s.Kind) ? "notification" : s.Kind,
                     Time = s.Time,
                     Source = s.Source,
+                    Key = s.Key,
                     PackageName = s.PackageName,
                     Title = s.Title,
                     Content = s.Content,
@@ -242,6 +251,7 @@ public sealed class MessageStore
                 Kind = m.Kind,
                 Time = m.Time,
                 Source = m.Source,
+                Key = m.Key,
                 PackageName = m.PackageName,
                 Title = m.Title,
                 Content = m.Content,

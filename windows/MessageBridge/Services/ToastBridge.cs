@@ -1,4 +1,5 @@
 using System.IO;
+using MessageBridge.Core;
 using Windows.Data.Xml.Dom;
 using Windows.UI.Notifications;
 
@@ -24,6 +25,9 @@ public sealed class ToastBridge
     private readonly object _logLock = new();
     private readonly Lazy<ToastNotifier> _notifier;
 
+    /// <summary>用户点了某条系统通知（Toast）。后台线程回调。</summary>
+    public event Action<OpenRequest>? OpenRequested;
+
     public ToastBridge(string dataDir)
     {
         _logPath = Path.Combine(dataDir, "logs", "toast.log");
@@ -34,11 +38,14 @@ public sealed class ToastBridge
     /// <summary>弹出系统通知；返回是否成功提交给系统。</summary>
     /// <param name="iconPath">图标 png 的绝对路径，null 表示不带图标。</param>
     /// <param name="silent">静默通知：不响铃、不弹预览横幅。</param>
-    public bool Show(string title, string content, string? iconPath, bool silent = false)
+    /// <param name="open">点击这条通知时要在手机上打开的目标；null 表示点击只唤起主窗口。</param>
+    public bool Show(string title, string content, string? iconPath, bool silent = false,
+        OpenRequest? open = null)
     {
         try
         {
-            var xml = "<toast><visual><binding template=\"ToastGeneric\">";
+            var launch = open == null ? "" : $" launch=\"{Escape(BuildLaunch(open))}\"";
+            var xml = $"<toast{launch}><visual><binding template=\"ToastGeneric\">";
             if (!string.IsNullOrEmpty(iconPath) && File.Exists(iconPath))
             {
                 // 不加 hint-crop，图标保持方形显示
@@ -64,6 +71,13 @@ public sealed class ToastBridge
                 Group = Group
             };
 
+            // 点击横幅 / 通知中心里的这一条：解析 launch 里带的目标，交给上层去发指令。
+            // 应用常驻托盘，所以 Activated 会在本进程内直接触发，不会另起一个实例。
+            if (open != null)
+            {
+                toast.Activated += OnToastActivated;
+            }
+
             // 先清掉上一条同 Tag 通知，避免系统排队导致后面的通知等好几秒
             try
             {
@@ -82,6 +96,62 @@ public sealed class ToastBridge
             Log($"Show failed: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+    }
+
+    private void OnToastActivated(ToastNotification sender, object args)
+    {
+        try
+        {
+            var argument = (args as ToastActivatedEventArgs)?.Arguments;
+            if (!TryParseLaunch(argument, out var request)) return;
+            OpenRequested?.Invoke(request);
+        }
+        catch (Exception ex)
+        {
+            Log($"Activated failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private const string LaunchPrefix = "open?";
+
+    /// <summary>
+    /// 把「要打开哪条通知」编码进 toast 的 launch 参数。
+    /// 不放内存字典是因为 Toast 会留在通知中心里，重启应用后点它也得能用。
+    /// </summary>
+    private static string BuildLaunch(OpenRequest open)
+    {
+        return LaunchPrefix
+               + "key=" + Uri.EscapeDataString(open.Key ?? "")
+               + "&pkg=" + Uri.EscapeDataString(open.PackageName ?? "")
+               + "&name=" + Uri.EscapeDataString(open.DisplayName ?? "");
+    }
+
+    private static bool TryParseLaunch(string? launch, out OpenRequest request)
+    {
+        request = null!;
+        if (string.IsNullOrEmpty(launch)) return false;
+
+        var query = launch.StartsWith(LaunchPrefix, StringComparison.Ordinal)
+            ? launch[LaunchPrefix.Length..]
+            : launch;
+
+        string? key = null, pkg = null;
+        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = pair.IndexOf('=');
+            if (eq <= 0) continue;
+            var name = pair[..eq];
+            var value = Uri.UnescapeDataString(pair[(eq + 1)..]);
+            switch (name)
+            {
+                case "key": key = value; break;
+                case "pkg": pkg = value; break;
+            }
+        }
+
+        if (string.IsNullOrEmpty(key) && string.IsNullOrEmpty(pkg)) return false;
+        request = new OpenRequest(key ?? "", pkg ?? "", "");
+        return true;
     }
 
     private static string Escape(string? s)

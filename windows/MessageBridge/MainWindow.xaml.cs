@@ -44,14 +44,6 @@ public sealed partial class MainWindow : Window
     /// <summary>点了列表里的某条通知，请求在手机上打开它。</summary>
     public event Action<OpenRequest>? OpenOnPhoneRequested;
 
-    /// <summary>
-    /// 一次「在手机上打开」的请求。
-    /// <paramref name="Key"/> 是手机端通知 key（历史记录没有，传空串），
-    /// <paramref name="PackageName"/> 用于通知已消失时退化成打开应用，
-    /// <paramref name="DisplayName"/> 只用于界面反馈。
-    /// </summary>
-    public sealed record OpenRequest(string Key, string PackageName, string DisplayName);
-
     public MainWindow(MessageStore store, SnapshotStore snapshot, int port, BridgeServer server)
     {
         InitializeComponent();

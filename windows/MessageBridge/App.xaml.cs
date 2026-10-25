@@ -134,6 +134,8 @@ public partial class App : Application
         _trust = new TrustStore(_dataDir);
         AumidShortcut.EnsureRegistered(); // 系统 Toast 需要 AUMID 身份（开始菜单快捷方式）
         _toast = new ToastBridge(_dataDir);
+        // 点 Windows 系统通知（Toast）：和点主窗口列表里那条一样，让手机打开对应会话
+        _toast.OpenRequested += OnOpenOnPhone;
         _server = new BridgeServer { Port = _config.Port };
         _router = new MessageRouter(_server, _trust);
 
@@ -399,16 +401,16 @@ public partial class App : Application
     /// 电脑上点了某条通知：让手机去打开。
     /// 手机端优先模拟点击那条通知（跳到对应会话），通知没了就退化成打开应用。
     /// </summary>
-    private void OnOpenOnPhone(MainWindow.OpenRequest request)
+    private void OnOpenOnPhone(OpenRequest request)
     {
         if (_router?.SendOpenNotification(request.Key, request.PackageName) != true)
         {
-            _mainWindow?.ShowHint("手机未连接，无法打开", error: true);
+            Ui.TryEnqueue(() => _mainWindow?.ShowHint("手机未连接，无法打开", error: true));
             return;
         }
 
         var name = string.IsNullOrEmpty(request.DisplayName) ? "应用" : request.DisplayName;
-        _mainWindow?.ShowHint($"已让手机打开 {name}");
+        Ui.TryEnqueue(() => _mainWindow?.ShowHint($"已让手机打开 {name}"));
     }
 
     private void OnServerDisconnected(BridgeConnection conn)
@@ -552,7 +554,7 @@ public partial class App : Application
 
         if (_recent.Count == 1)
         {
-            ShowToast(ToastTitle(item), ToastBody(item), item.IconPath, item.Silent);
+            ShowToast(ToastTitle(item), ToastBody(item), item.IconPath, item.Silent, OpenFor(item));
             return;
         }
 
@@ -561,13 +563,19 @@ public partial class App : Application
             $"{m.Source} · {Shorten(string.IsNullOrEmpty(m.Content) ? m.Title : m.Content, 26)}");
         var body = string.Join("\n", lines);
         var silent = _recent.All(m => m.Silent);
-        ShowToast(title, body, _recent[^1].IconPath, silent);
+        // 合并提示点开后打开「最新那条」，和通知正文默认展示的一致
+        ShowToast(title, body, _recent[^1].IconPath, silent, OpenFor(_recent[^1]));
     }
 
-    private void ShowToast(string title, string body, string? iconPath, bool silent)
+    /// <summary>Toast / 列表点击时要打开的目标：key 精确到会话，包名兜底。</summary>
+    private static OpenRequest OpenFor(MessageItem item)
+        => new(item.Key, item.PackageName, item.Source);
+
+    private void ShowToast(string title, string body, string? iconPath, bool silent,
+        OpenRequest? open = null)
     {
         // Toast 失败时退回托盘气泡，保证消息一定能被看到
-        if (_toast == null || !_toast.Show(title, body, iconPath, silent))
+        if (_toast == null || !_toast.Show(title, body, iconPath, silent, open))
             _tray?.ShowBalloon(title, body);
     }
 
