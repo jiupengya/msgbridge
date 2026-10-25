@@ -185,6 +185,9 @@ object BridgeController {
     private const val FLAG_SHOW_WHEN_LOCKED_LEGACY = 0x00002000
     private const val FLAG_TURN_SCREEN_ON_LEGACY = 0x00000020
 
+    /** 解锁中转页的请求序号，放在 Intent extra 里传过去。 */
+    internal const val EXTRA_UNLOCK_GENERATION = "unlockGeneration"
+
     /** 点亮屏幕用的唤醒锁最长持有时间（到点自动释放，不用手动 release）。 */
     private const val SCREEN_WAKE_TIMEOUT_MS = 10_000L
 
@@ -269,7 +272,11 @@ object BridgeController {
      * 少一步操作。而且解锁那一刻中转页就在前台，启动别人的界面不受后台限制。
      */
     private fun runAfterUnlock(ctx: Context, action: () -> Unit) {
+        // 每次请求带一个序号：上一轮的解锁页 finish 得比较晚时，
+        // 它的 onDestroy 不会把这一轮的请求误清掉。
+        val generation = ++pendingOpenGeneration
         pendingOpenAction = action
+
         Handler(Looper.getMainLooper()).post {
             withOverlayAnchor(ctx) {
                 try {
@@ -284,33 +291,40 @@ object BridgeController {
                                 FLAG_SHOW_WHEN_LOCKED_LEGACY or
                                 FLAG_TURN_SCREEN_ON_LEGACY
                         )
+                        .putExtra(EXTRA_UNLOCK_GENERATION, generation)
                     ctx.startActivity(intent)
                 } catch (e: Exception) {
                     Log.w(TAG, "start unlock gate failed", e)
-                    pendingOpenAction = null
+                    if (generation == pendingOpenGeneration) pendingOpenAction = null
                 }
             }
         }
     }
 
     /** 中转页解锁通过：执行挂起的打开动作。 */
-    internal fun onUnlockGatePassed() {
+    internal fun onUnlockGatePassed(generation: Int) {
+        if (generation != pendingOpenGeneration) return
         val action = pendingOpenAction
         pendingOpenAction = null
         action?.invoke()
     }
 
     /** 用户取消了系统解锁界面。 */
-    internal fun onUnlockGateCancelled() {
+    internal fun onUnlockGateCancelled(generation: Int) {
+        if (generation != pendingOpenGeneration) return
+        Log.i(TAG, "unlock gate cancelled by user")
         pendingOpenAction = null
     }
 
     /** 中转页被关掉（按返回 / 被系统回收）：这次打开请求作废。 */
-    internal fun onUnlockGateDismissed() {
+    internal fun onUnlockGateDismissed(generation: Int) {
+        if (generation != pendingOpenGeneration) return
+        Log.i(TAG, "unlock gate dismissed, dropping request")
         pendingOpenAction = null
     }
 
     private var pendingOpenAction: (() -> Unit)? = null
+    private var pendingOpenGeneration = 0
 
     /**
      * 熄屏 / 锁屏时把屏幕点亮，让用户看到锁屏界面。

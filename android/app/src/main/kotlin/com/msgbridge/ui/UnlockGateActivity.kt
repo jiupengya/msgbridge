@@ -3,8 +3,10 @@ package com.msgbridge.ui
 import android.app.Activity
 import android.app.KeyguardManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import com.msgbridge.core.BridgeController
 
 /**
@@ -24,54 +26,84 @@ class UnlockGateActivity : Activity() {
     /** 防止 requestDismissKeyguard 回调和 onResume 双双触发。 */
     private var handedOver = false
 
+    /** 这一轮请求的序号，和 [BridgeController] 里存的对照。 */
+    private var generation = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        generation = intent?.getIntExtra(BridgeController.EXTRA_UNLOCK_GENERATION, 0) ?: 0
+    }
 
+    override fun onResume() {
+        super.onResume()
+        if (handedOver) return
+        // 放在 onResume 而不是 onCreate：MIUI 上页面还没真正可见时调
+        // requestDismissKeyguard() 可能根本不回调，表现就是「亮屏了但什么都不发生」。
+        // 就算在 onResume 里第一次也可能被忽略，所以下一帧再补一次。
+        requestDismiss()
+        window.decorView.postDelayed({
+            if (!handedOver) requestDismiss()
+        }, RETRY_DELAY_MS)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        // 用户在等解锁时又点了一条：换成新的请求序号，重新请求一次
+        if (handedOver) return
+        generation = intent?.getIntExtra(BridgeController.EXTRA_UNLOCK_GENERATION, generation)
+            ?: generation
+        requestDismiss()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // 只有「没走完流程」才作废请求。正常 handOver 之后 finish() 的 onDestroy
+        // 可能比下一次点击还晚到，代码里靠序号（generation）挡住误清。
+        if (!handedOver) BridgeController.onUnlockGateDismissed(generation)
+    }
+
+    private fun requestDismiss() {
         val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         if (!keyguard.isKeyguardLocked) {
             handOver()
             return
         }
 
+        Log.i(TAG, "request dismiss keyguard (gen=$generation)")
         keyguard.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
             override fun onDismissSucceeded() = handOver()
             override fun onDismissCancelled() = cancel()
-            override fun onDismissError() = cancel()
+            override fun onDismissError() {
+                // 个别 ROM 直接报错：留在页面上，下次回到前台会再试一次
+                Log.w(TAG, "dismiss keyguard error (gen=$generation)")
+            }
         })
-    }
-
-    /**
-     * 有些 ROM 上 requestDismissKeyguard 不回调（或者用户直接上滑解锁了），
-     * 所以每次回到前台再检查一次，别让这次点击白点。
-     */
-    override fun onResume() {
-        super.onResume()
-        if (handedOver) return
-        val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-        if (!keyguard.isKeyguardLocked) handOver()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // 按返回键 / 被系统回收：这次打开请求作废
-        BridgeController.onUnlockGateDismissed()
     }
 
     private fun handOver() {
         if (handedOver) return
         handedOver = true
-        BridgeController.onUnlockGatePassed()
+        Log.i(TAG, "unlocked, handing over (gen=$generation)")
+        BridgeController.onUnlockGatePassed(generation)
         finish()
     }
 
     private fun cancel() {
         if (handedOver) return
         handedOver = true
-        BridgeController.onUnlockGateCancelled()
+        Log.i(TAG, "unlock cancelled (gen=$generation)")
+        BridgeController.onUnlockGateCancelled(generation)
         finish()
+    }
+
+    private companion object {
+        const val TAG = "MsgBridge/UnlockGate"
+
+        /** 补一次 requestDismissKeyguard 的延迟（等窗口真正可见）。 */
+        const val RETRY_DELAY_MS = 200L
     }
 }
