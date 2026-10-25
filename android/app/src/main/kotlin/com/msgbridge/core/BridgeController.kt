@@ -1,10 +1,13 @@
 package com.msgbridge.core
 
+import android.app.ActivityOptions
 import android.app.KeyguardManager
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -188,6 +191,9 @@ object BridgeController {
     /** 解锁中转页的请求序号，放在 Intent extra 里传过去。 */
     internal const val EXTRA_UNLOCK_GENERATION = "unlockGeneration"
 
+    /** 解锁页迟迟没接管时的兜底等待时间。 */
+    private const val UNLOCK_GATE_FALLBACK_MS = 1500L
+
     /** 点亮屏幕用的唤醒锁最长持有时间（到点自动释放，不用手动 release）。 */
     private const val SCREEN_WAKE_TIMEOUT_MS = 10_000L
 
@@ -248,6 +254,18 @@ object BridgeController {
         if (isKeyguardLocked(ctx)) {
             Log.i(TAG, "keyguard locked, will open after unlock")
             runAfterUnlock(ctx, open)
+
+            // 兜底：MIUI 上「第二次从后台启动解锁页」经常被系统直接取消
+            // （START_CANCELED），那就退化成「点亮屏幕 + 直接把目标界面启动在锁屏后面」，
+            // 用户解锁后照样能看到，总比点了没反应强。
+            val id = pendingOpenGeneration
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (id == pendingOpenGeneration && pendingOpenAction != null) {
+                    Log.w(TAG, "unlock gate did not take over, opening directly")
+                    pendingOpenAction = null
+                    open()
+                }
+            }, UNLOCK_GATE_FALLBACK_MS)
         } else {
             open()
         }
@@ -280,6 +298,11 @@ object BridgeController {
         Handler(Looper.getMainLooper()).post {
             withOverlayAnchor(ctx) {
                 try {
+                    // 每次都用新的 requestCode + 新 data：复用同一个 PendingIntent
+                    // 或者组件完全相同的 Intent 连着启动时，系统会当成重复启动，
+                    // 直接 START_CANCELED（表现就是第二次点击必挂）
+                    val requestCode = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
+
                     @Suppress("DEPRECATION")
                     val intent = Intent(ctx, UnlockGateActivity::class.java)
                         .addFlags(
@@ -292,7 +315,30 @@ object BridgeController {
                                 FLAG_TURN_SCREEN_ON_LEGACY
                         )
                         .putExtra(EXTRA_UNLOCK_GENERATION, generation)
-                    ctx.startActivity(intent)
+                        .setData(Uri.parse("msgbridge://unlock/$generation/$requestCode"))
+
+                    // 用 PendingIntent 而不是裸 startActivity：应用在后台时，
+                    // Android 15 会把后台启动的 Activity 按成 "invisible launch"
+                    // （创建了但不可见，onResume 不跑，解锁界面自然也弹不出来）。
+                    // 借 PendingIntent 的通道（和通知自带 contentIntent 同一条路）
+                    // 才能真的把界面顶到锁屏上。
+                    val pending = PendingIntent.getActivity(
+                        ctx,
+                        requestCode,
+                        intent,
+                        PendingIntent.FLAG_IMMUTABLE
+                    )
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        val options = ActivityOptions.makeBasic().apply {
+                            setPendingIntentBackgroundActivityStartMode(
+                                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                            )
+                        }
+                        pending.send(ctx, 0, null, null, null, null, options.toBundle())
+                    } else {
+                        pending.send()
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "start unlock gate failed", e)
                     if (generation == pendingOpenGeneration) pendingOpenAction = null

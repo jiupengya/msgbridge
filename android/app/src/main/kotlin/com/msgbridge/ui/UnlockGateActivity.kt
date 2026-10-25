@@ -1,4 +1,4 @@
-package com.msgbridge.ui
+﻿package com.msgbridge.ui
 
 import android.app.Activity
 import android.app.KeyguardManager
@@ -29,6 +29,9 @@ class UnlockGateActivity : Activity() {
     /** 这一轮请求的序号，和 [BridgeController] 里存的对照。 */
     private var generation = 0
 
+    /** 补请求是否已经排过队（onResume 可能被反复调用）。 */
+    private var retriesScheduled = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -43,17 +46,22 @@ class UnlockGateActivity : Activity() {
         if (handedOver) return
         // 放在 onResume 而不是 onCreate：MIUI 上页面还没真正可见时调
         // requestDismissKeyguard() 可能根本不回调，表现就是「亮屏了但什么都不发生」。
-        // 就算在 onResume 里第一次也可能被忽略，所以下一帧再补一次。
+        // 而且前几次经常被静默忽略，所以连着补几次，成功一次就停。
         requestDismiss()
-        window.decorView.postDelayed({
-            if (!handedOver) requestDismiss()
-        }, RETRY_DELAY_MS)
+        if (retriesScheduled) return
+        retriesScheduled = true
+        RETRY_DELAYS_MS.forEach { delay ->
+            window.decorView.postDelayed({
+                if (!handedOver) requestDismiss()
+            }, delay)
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
-        // 用户在等解锁时又点了一条：换成新的请求序号，重新请求一次
-        if (handedOver) return
+        // 复用了旧实例：这是一次全新请求，状态全部重置
+        handedOver = false
+        retriesScheduled = false
         generation = intent?.getIntExtra(BridgeController.EXTRA_UNLOCK_GENERATION, generation)
             ?: generation
         requestDismiss()
@@ -64,6 +72,12 @@ class UnlockGateActivity : Activity() {
         // 只有「没走完流程」才作废请求。正常 handOver 之后 finish() 的 onDestroy
         // 可能比下一次点击还晚到，代码里靠序号（generation）挡住误清。
         if (!handedOver) BridgeController.onUnlockGateDismissed(generation)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 窗口真正拿到焦点才说明系统认它能显示在锁屏上，这时候请求解锁最灵
+        if (hasFocus && !handedOver) requestDismiss()
     }
 
     private fun requestDismiss() {
@@ -89,7 +103,7 @@ class UnlockGateActivity : Activity() {
         handedOver = true
         Log.i(TAG, "unlocked, handing over (gen=$generation)")
         BridgeController.onUnlockGatePassed(generation)
-        finish()
+        finishAndRemoveTask()
     }
 
     private fun cancel() {
@@ -97,13 +111,13 @@ class UnlockGateActivity : Activity() {
         handedOver = true
         Log.i(TAG, "unlock cancelled (gen=$generation)")
         BridgeController.onUnlockGateCancelled(generation)
-        finish()
+        finishAndRemoveTask()
     }
 
     private companion object {
         const val TAG = "MsgBridge/UnlockGate"
 
-        /** 补一次 requestDismissKeyguard 的延迟（等窗口真正可见）。 */
-        const val RETRY_DELAY_MS = 200L
+        /** 补一次 requestDismissKeyguard 的延迟表（等窗口真正可见、等 ROM 愿意响应）。 */
+        val RETRY_DELAYS_MS = longArrayOf(150L, 500L, 1200L, 2500L)
     }
 }

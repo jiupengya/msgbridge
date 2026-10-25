@@ -58,8 +58,9 @@
             android:name=".ui.UnlockGateActivity"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:launchMode="singleTop"
+            android:launchMode="standard"
             android:showWhenLocked="true"
+            android:taskAffinity=""
             android:theme="@style/Theme.MessageBridge.Transparent"
             android:turnScreenOn="true" />
 
