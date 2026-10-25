@@ -53,17 +53,6 @@
             </intent-filter>
         </activity>
 
-        <!-- 锁屏中转页：透明，站到锁屏上把系统解锁界面直接弹出来 -->
-        <activity
-            android:name=".ui.UnlockGateActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="standard"
-            android:showWhenLocked="true"
-            android:taskAffinity=""
-            android:theme="@style/Theme.MessageBridge.Transparent"
-            android:turnScreenOn="true" />
-
         <!-- 常驻前台服务：保活 TCP 长连接 -->
         <service
             android:name=".service.BridgeService"

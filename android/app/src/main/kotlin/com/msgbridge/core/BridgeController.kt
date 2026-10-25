@@ -1,13 +1,12 @@
 package com.msgbridge.core
 
-import android.app.ActivityOptions
 import android.app.KeyguardManager
 import android.app.NotificationManager
-import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -17,7 +16,6 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import com.msgbridge.ui.UnlockGateActivity
 import com.msgbridge.service.BridgeService
 import com.msgbridge.service.NotificationListener
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -184,15 +182,8 @@ object BridgeController {
     /** 启动之后多久摘掉叠加窗口（给启动过程留点余量）。 */
     private const val OVERLAY_ANCHOR_LINGER_MS = 500L
 
-    /** 熄屏/锁屏时把界面顶上去执行 [block]。 */
-    private const val FLAG_SHOW_WHEN_LOCKED_LEGACY = 0x00002000
-    private const val FLAG_TURN_SCREEN_ON_LEGACY = 0x00000020
-
-    /** 解锁中转页的请求序号，放在 Intent extra 里传过去。 */
-    internal const val EXTRA_UNLOCK_GENERATION = "unlockGeneration"
-
-    /** 解锁页迟迟没接管时的兜底等待时间。 */
-    private const val UNLOCK_GATE_FALLBACK_MS = 1500L
+    /** 锁屏时最多等用户多久解锁，超时就放弃这次打开请求。 */
+    private const val UNLOCK_WAIT_TIMEOUT_MS = 60_000L
 
     /** 点亮屏幕用的唤醒锁最长持有时间（到点自动释放，不用手动 release）。 */
     private const val SCREEN_WAKE_TIMEOUT_MS = 10_000L
@@ -248,24 +239,12 @@ object BridgeController {
             }
         }
 
-        // 锁屏状态下启动的界面会被系统压在锁屏后面（Task.visible=false），
-        // 解锁后也不会自动跳到前台。所以干脆等解锁那一刻再启动 ——
-        // 用户体验就是：屏幕亮起 → 解锁 → 直接落在对应会话上。
+        // 锁屏时只点亮屏幕，等用户解锁（USER_PRESENT）后再启动目标界面。
+        // 锁屏状态下启动的界面会被系统按成 invisible（MIUI 还会直接拒掉
+        // showWhenLocked 的 Activity），解锁后根本看不到，等于白启动。
         if (isKeyguardLocked(ctx)) {
             Log.i(TAG, "keyguard locked, will open after unlock")
             runAfterUnlock(ctx, open)
-
-            // 兜底：MIUI 上「第二次从后台启动解锁页」经常被系统直接取消
-            // （START_CANCELED），那就退化成「点亮屏幕 + 直接把目标界面启动在锁屏后面」，
-            // 用户解锁后照样能看到，总比点了没反应强。
-            val id = pendingOpenGeneration
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (id == pendingOpenGeneration && pendingOpenAction != null) {
-                    Log.w(TAG, "unlock gate did not take over, opening directly")
-                    pendingOpenAction = null
-                    open()
-                }
-            }, UNLOCK_GATE_FALLBACK_MS)
         } else {
             open()
         }
@@ -283,92 +262,62 @@ object BridgeController {
     }
 
     /**
-     * 锁屏时先弹系统解锁界面，解锁通过后再执行 [action]。
+     * 锁屏时等用户解锁：收到 `ACTION_USER_PRESENT` 再执行 [action]。
      *
-     * 用 [UnlockGateActivity] 而不是注册 USER_PRESENT 广播：那个只能等用户自己
-     * 「上滑 + 输密码」，这里可以借 requestDismissKeyguard() 把密码键盘直接弹出来，
-     * 少一步操作。而且解锁那一刻中转页就在前台，启动别人的界面不受后台限制。
+     * 解锁那一刻用户正在操作屏幕，这时启动界面才真正可见；锁屏时启动只会被
+     * 系统按成 invisible（后台启动限制 + MIUI 拒绝锁屏显示），解锁后也看不到。
+     * 60 秒一直不解锁就放弃，别把 receiver 一直挂着。
      */
     private fun runAfterUnlock(ctx: Context, action: () -> Unit) {
-        // 每次请求带一个序号：上一轮的解锁页 finish 得比较晚时，
-        // 它的 onDestroy 不会把这一轮的请求误清掉。
+        cancelPendingOpen()
+        // 序号：上一轮的 receiver 迟到时不会误触发这一轮
         val generation = ++pendingOpenGeneration
         pendingOpenAction = action
 
-        Handler(Looper.getMainLooper()).post {
-            withOverlayAnchor(ctx) {
-                try {
-                    // 每次都用新的 requestCode + 新 data：复用同一个 PendingIntent
-                    // 或者组件完全相同的 Intent 连着启动时，系统会当成重复启动，
-                    // 直接 START_CANCELED（表现就是第二次点击必挂）
-                    val requestCode = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
-
-                    @Suppress("DEPRECATION")
-                    val intent = Intent(ctx, UnlockGateActivity::class.java)
-                        .addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                // 这两个 flag 虽然早就标了废弃（改用 setShowWhenLocked），
-                                // 但 MIUI 的锁屏校验看的就是 Intent 上的 flag，
-                                // 只写 Activity 属性会被拦成 "Permission Denied Activity KeyguardLocked"。
-                                // 新版 SDK 里常量已删，只能写数值。
-                                FLAG_SHOW_WHEN_LOCKED_LEGACY or
-                                FLAG_TURN_SCREEN_ON_LEGACY
-                        )
-                        .putExtra(EXTRA_UNLOCK_GENERATION, generation)
-                        .setData(Uri.parse("msgbridge://unlock/$generation/$requestCode"))
-
-                    // 用 PendingIntent 而不是裸 startActivity：应用在后台时，
-                    // Android 15 会把后台启动的 Activity 按成 "invisible launch"
-                    // （创建了但不可见，onResume 不跑，解锁界面自然也弹不出来）。
-                    // 借 PendingIntent 的通道（和通知自带 contentIntent 同一条路）
-                    // 才能真的把界面顶到锁屏上。
-                    val pending = PendingIntent.getActivity(
-                        ctx,
-                        requestCode,
-                        intent,
-                        PendingIntent.FLAG_IMMUTABLE
-                    )
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        val options = ActivityOptions.makeBasic().apply {
-                            setPendingIntentBackgroundActivityStartMode(
-                                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
-                            )
-                        }
-                        pending.send(ctx, 0, null, null, null, null, options.toBundle())
-                    } else {
-                        pending.send()
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "start unlock gate failed", e)
-                    if (generation == pendingOpenGeneration) pendingOpenAction = null
-                }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != Intent.ACTION_USER_PRESENT) return
+                if (generation != pendingOpenGeneration) return
+                val pending = pendingOpenAction
+                cancelPendingOpen()
+                Log.i(TAG, "unlocked, opening notification now")
+                pending?.invoke()
             }
         }
+
+        val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                ctx.registerReceiver(receiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "register user-present receiver failed", e)
+            pendingOpenAction = null
+            return
+        }
+
+        pendingOpenReceiver = receiver
+        mainHandler.postDelayed(cancelPendingOpenRunnable, UNLOCK_WAIT_TIMEOUT_MS)
     }
 
-    /** 中转页解锁通过：执行挂起的打开动作。 */
-    internal fun onUnlockGatePassed(generation: Int) {
-        if (generation != pendingOpenGeneration) return
-        val action = pendingOpenAction
+    private fun cancelPendingOpen() {
+        mainHandler.removeCallbacks(cancelPendingOpenRunnable)
+        pendingOpenReceiver?.let {
+            try {
+                appContext?.unregisterReceiver(it)
+            } catch (e: Exception) {
+                // 已经反注册过就忽略
+            }
+        }
+        pendingOpenReceiver = null
         pendingOpenAction = null
-        action?.invoke()
     }
 
-    /** 用户取消了系统解锁界面。 */
-    internal fun onUnlockGateCancelled(generation: Int) {
-        if (generation != pendingOpenGeneration) return
-        Log.i(TAG, "unlock gate cancelled by user")
-        pendingOpenAction = null
-    }
-
-    /** 中转页被关掉（按返回 / 被系统回收）：这次打开请求作废。 */
-    internal fun onUnlockGateDismissed(generation: Int) {
-        if (generation != pendingOpenGeneration) return
-        Log.i(TAG, "unlock gate dismissed, dropping request")
-        pendingOpenAction = null
-    }
-
+    private val cancelPendingOpenRunnable = Runnable { cancelPendingOpen() }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingOpenReceiver: BroadcastReceiver? = null
     private var pendingOpenAction: (() -> Unit)? = null
     private var pendingOpenGeneration = 0
 
