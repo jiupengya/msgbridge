@@ -28,6 +28,16 @@ public sealed class ToastBridge
     /// <summary>用户点了某条系统通知（Toast）。后台线程回调。</summary>
     public event Action<OpenRequest>? OpenRequested;
 
+    /// <summary>横幅上的「手机勿扰」按钮被点击（切换勿扰）。后台线程回调。</summary>
+    public event Action? DndToggleRequested;
+
+    /// <summary>横幅上的「暂停 30 分钟」按钮被点击。后台线程回调。</summary>
+    public event Action? PauseToggleRequested;
+
+    /// <summary>横幅按钮的 arguments，点主体时是 launch 参数，两者不能混。</summary>
+    private const string ActionDnd = "msgbridge:dnd";
+    private const string ActionPause = "msgbridge:pause";
+
     public ToastBridge(string dataDir)
     {
         _logPath = Path.Combine(dataDir, "logs", "toast.log");
@@ -38,9 +48,10 @@ public sealed class ToastBridge
     /// <summary>弹出系统通知；返回是否成功提交给系统。</summary>
     /// <param name="iconPath">图标 png 的绝对路径，null 表示不带图标。</param>
     /// <param name="silent">静默通知：不响铃、不弹预览横幅。</param>
-    /// <param name="open">点击这条通知时要在手机上打开的目标；null 表示点击只唤起主窗口。</param>
+    /// <param name="open">点击这条通知时要在手机上打开的目标；null 表示点击只唤起主窗口，也不带快捷按钮。</param>
+    /// <param name="dndOn">手机当前是否在勿扰，用来决定按钮文字（开启 / 关闭勿扰）。</param>
     public bool Show(string title, string content, string? iconPath, bool silent = false,
-        OpenRequest? open = null)
+        OpenRequest? open = null, bool? dndOn = null)
     {
         try
         {
@@ -61,6 +72,17 @@ public sealed class ToastBridge
                 // 手机端标记为静默的通知，电脑端也不响
                 xml += "<audio silent=\"true\"/>";
             }
+
+            // 只在真正的消息横幅上加快捷按钮；配对提示这类 open 为空的提示不加
+            if (open != null)
+            {
+                var dndText = dndOn == true ? "关闭勿扰" : "开启勿扰";
+                xml += "<actions>";
+                xml += $"<action content=\"{dndText}\" arguments=\"{ActionDnd}\" activationType=\"foreground\"/>";
+                xml += $"<action content=\"暂停 30 分钟\" arguments=\"{ActionPause}\" activationType=\"foreground\"/>";
+                xml += "</actions>";
+            }
+
             xml += "</toast>";
 
             var doc = new XmlDocument();
@@ -103,6 +125,19 @@ public sealed class ToastBridge
         try
         {
             var argument = (args as ToastActivatedEventArgs)?.Arguments;
+            if (string.IsNullOrEmpty(argument)) return;
+
+            // 快捷按钮和「点通知主体」走的是同一个 Activated 事件，靠 arguments 区分
+            switch (argument)
+            {
+                case ActionDnd:
+                    DndToggleRequested?.Invoke();
+                    return;
+                case ActionPause:
+                    PauseToggleRequested?.Invoke();
+                    return;
+            }
+
             if (!TryParseLaunch(argument, out var request)) return;
             OpenRequested?.Invoke(request);
         }

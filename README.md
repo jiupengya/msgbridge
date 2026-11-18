@@ -146,6 +146,15 @@ msgbridge/
 
 Windows 系统通知（Toast）**本身也能点**：横幅弹出时直接点它，效果和点主窗口列表里那条一样（合并成「N 条新消息」时点开的是最新那条）。实现上把 `key / packageName` 编码进 toast 的 `launch` 参数，再订阅 `ToastNotification.Activated` 在同一进程里接住 —— 应用常驻托盘，所以不会另起一个实例。没有可打开目标的通知（比如配对提示）不带 `launch`，点它只会唤起主窗口。
 
+横幅上还挂着两个快捷按钮，不用切窗口：
+
+| 按钮 | 作用 |
+| --- | --- |
+| **开启勿扰 / 关闭勿扰** | 一键切换手机勿扰，文案跟着手机当前状态变 |
+| **暂停 30 分钟** | 和托盘菜单里的「暂停推送 30 分钟」是同一个开关 |
+
+实现是 toast 的 `<actions>` + `activationType="foreground"`：按钮和「点通知主体」共用同一个 `ToastNotification.Activated`，靠 arguments 区分（主体是 `open?key=...`，按钮是 `msgbridge:dnd` / `msgbridge:pause`）。只有真正的消息横幅带按钮，配对提示这类不带。
+
 协议上很简单，电脑发一条 `command.openNotification`（`id` = 手机端通知 key，`packageName` 兜底）：
 
 - **通知还挂在通知栏上**：手机端 `send()` 它自带的 `contentIntent`，效果等于在手机上点这条通知 —— 微信会直接跳进对应聊天窗口，不是停在首页。

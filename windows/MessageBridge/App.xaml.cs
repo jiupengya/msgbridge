@@ -136,6 +136,9 @@ public partial class App : Application
         _toast = new ToastBridge(_dataDir);
         // 点 Windows 系统通知（Toast）：和点主窗口列表里那条一样，让手机打开对应会话
         _toast.OpenRequested += OnOpenOnPhone;
+        // 横幅上的两个快捷按钮：手机勿扰 / 暂停推送 30 分钟
+        _toast.DndToggleRequested += () => Ui.TryEnqueue(OnToastDndToggle);
+        _toast.PauseToggleRequested += () => Ui.TryEnqueue(OnPauseToggle);
         _server = new BridgeServer { Port = _config.Port };
         _router = new MessageRouter(_server, _trust);
 
@@ -391,6 +394,12 @@ public partial class App : Application
         RefreshLiveState();
     }
 
+    /// <summary>横幅上的「开启/关闭勿扰」按钮：切换手机勿扰。</summary>
+    private void OnToastDndToggle()
+    {
+        OnLocalDndToggle(_dndOn ? 2 : 0);
+    }
+
     /// <summary>面板上点了「清空手机通知」。</summary>
     private void OnClearPhoneNotifications()
     {
@@ -554,7 +563,8 @@ public partial class App : Application
 
         if (_recent.Count == 1)
         {
-            ShowToast(ToastTitle(item), ToastBody(item), item.IconPath, item.Silent, OpenFor(item));
+            ShowToast(ToastTitle(item), ToastBody(item), item.IconPath, item.Silent,
+                OpenFor(item), _dndOn);
             return;
         }
 
@@ -564,18 +574,19 @@ public partial class App : Application
         var body = string.Join("\n", lines);
         var silent = _recent.All(m => m.Silent);
         // 合并提示点开后打开「最新那条」，和通知正文默认展示的一致
-        ShowToast(title, body, _recent[^1].IconPath, silent, OpenFor(_recent[^1]));
+        ShowToast(title, body, _recent[^1].IconPath, silent, OpenFor(_recent[^1]), _dndOn);
     }
 
     /// <summary>Toast / 列表点击时要打开的目标：key 精确到会话，包名兜底。</summary>
     private static OpenRequest OpenFor(MessageItem item)
         => new(item.Key, item.PackageName, item.Source);
 
+    /// <param name="dndOn">手机当前是否勿扰，决定横幅上按钮文字是「开启勿扰」还是「关闭勿扰」。</param>
     private void ShowToast(string title, string body, string? iconPath, bool silent,
-        OpenRequest? open = null)
+        OpenRequest? open = null, bool? dndOn = null)
     {
         // Toast 失败时退回托盘气泡，保证消息一定能被看到
-        if (_toast == null || !_toast.Show(title, body, iconPath, silent, open))
+        if (_toast == null || !_toast.Show(title, body, iconPath, silent, open, dndOn))
             _tray?.ShowBalloon(title, body);
     }
 
