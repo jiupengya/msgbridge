@@ -154,21 +154,6 @@ public sealed class BleClient : IDisposable
 
             _device.ConnectionStatusChanged += (_, _) =>
                 Log?.Invoke($"ble: 连接状态 {_device?.ConnectionStatus}");
-
-            // Windows 默认在两次 GATT 操作之间断开空闲连接，重连期间
-            // ConnectionStatus 会疯狂抖动，服务发现很容易撞上超时。
-            // 显式持有 GattSession 把链路留住。
-            try
-            {
-                _session = await GattSession
-                    .FromDeviceIdAsync(_device.BluetoothDeviceId)
-                    .AsTask().WaitAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
-                if (_session != null) _session.MaintainConnection = true;
-            }
-            catch (Exception ex)
-            {
-                Log?.Invoke($"ble: 建会话失败（{ex.Message}），继续尝试");
-            }
         }
 
         // 刚拿到的 device 往往还是 Disconnected，直接去发现服务会拿到 Unreachable
