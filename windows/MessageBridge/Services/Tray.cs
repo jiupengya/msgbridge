@@ -25,6 +25,7 @@ public sealed class Tray : IDisposable
     private ToolStripMenuItem? _pauseItem;
     private ToolStripMenuItem? _startupItem;
     private ToolStripMenuItem? _wifiItem;
+    private ToolStripMenuItem? _autoWifiItem;
     private bool _lightTaskbar = true;
     private bool _disposed;
     private bool _wifiBusy;
@@ -39,6 +40,8 @@ public sealed class Tray : IDisposable
     public event Action? StartupToggleRequested;
     /// <summary>点击「让手机连上 WiFi」：走蓝牙带外通道。</summary>
     public event Action? WifiConnectRequested;
+    /// <summary>点击「自动连回 WiFi」勾选项。</summary>
+    public event Action? AutoWifiToggleRequested;
 
     /// <summary>左键单击后要等过双击窗口期，避免双击时也顺带触发一次单击。</summary>
     private bool _singleClickPending;
@@ -102,6 +105,10 @@ public sealed class Tray : IDisposable
         _wifiItem = new ToolStripMenuItem("让手机连上 WiFi（蓝牙）", null,
             (_, _) => WifiConnectRequested?.Invoke());
         menu.Items.Add(_wifiItem);
+
+        _autoWifiItem = new ToolStripMenuItem("自动连回 WiFi", null,
+            (_, _) => AutoWifiToggleRequested?.Invoke());
+        menu.Items.Add(_autoWifiItem);
         menu.Opening += (_, _) => RefreshWifiItem();
 
         _pauseItem = new ToolStripMenuItem("暂停推送 30 分钟", null,
@@ -236,6 +243,14 @@ public sealed class Tray : IDisposable
         {
             if (_startupItem == null) return;
             _startupItem.Checked = enabled;
+        });
+
+    /// <summary>更新「自动连回 WiFi」勾选状态。</summary>
+    public void SetAutoWifiState(bool enabled)
+        => Run(() =>
+        {
+            if (_autoWifiItem == null) return;
+            _autoWifiItem.Checked = enabled;
         });
 
     /// <summary>刷新「让手机连上 WiFi」的文案与可用性（菜单弹出时调用）。</summary>

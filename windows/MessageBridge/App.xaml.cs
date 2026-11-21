@@ -53,12 +53,29 @@ public partial class App : Application
     /// <summary>手机是否已配对连接（断连时快照清空、远程开关置灰）。</summary>
     private bool _phoneConnected;
 
+    /// <summary>手机从什么时候开始连不上的，用来判断「持续断开 30 秒」。</summary>
+    private DateTime? _phoneDisconnectedSince;
+
+    /// <summary>上次自动连 WiFi 的时间与累计次数，避免反复触发。</summary>
+    private DateTime _lastAutoWifiAttempt = DateTime.MinValue;
+    private int _autoWifiAttempts;
+    private DispatcherQueueTimer? _autoWifiTimer;
+
     private sealed class Config
     {
         public int Port { get; set; } = 17001;
 
         /// <summary>是否弹出 Windows 系统通知气泡。</summary>
         public bool EnableWindowsToast { get; set; } = true;
+
+        /// <summary>
+        /// 自动 WiFi 兜底只在「这块以太网」上启用，用网关 MAC 识别
+        /// （默认是家里那台 Redmi 路由器的 LAN 口）。
+        /// </summary>
+        public string TargetGatewayMac { get; set; } = "88-C3-97-44-40-95";
+
+        /// <summary>手机连不上时，是否自动经蓝牙让手机连回 WiFi。</summary>
+        public bool AutoWifiFallback { get; set; } = true;
     }
 
     private Config _config = new();
@@ -203,11 +220,19 @@ public partial class App : Application
         _tray.PauseToggleRequested += () => Ui.TryEnqueue(OnPauseToggle);
         _tray.StartupToggleRequested += () => Ui.TryEnqueue(OnStartupToggle);
         _tray.WifiConnectRequested += () => Ui.TryEnqueue(() => _ = OnWifiConnectAsync());
+        _tray.AutoWifiToggleRequested += () => Ui.TryEnqueue(OnAutoWifiToggle);
         _tray.SetStartupState(StartupRegistry.IsEnabled());
         _tray.SetPauseState(false, "暂停推送 30 分钟");
+        _tray.SetAutoWifiState(_config.AutoWifiFallback);
 
         _server.Disconnected += OnServerDisconnected;
         _server.Connected += OnServerConnected;
+
+        // 自动 WiFi 兜底：每 10 秒看一次条件够不够
+        _autoWifiTimer = Ui.CreateTimer();
+        _autoWifiTimer.Interval = TimeSpan.FromSeconds(10);
+        _autoWifiTimer.Tick += (_, _) => CheckAutoWifi();
+        _autoWifiTimer.Start();
 
         try
         {
@@ -473,6 +498,7 @@ public partial class App : Application
         Ui.TryEnqueue(() =>
         {
             _phoneConnected = false;
+            _phoneDisconnectedSince = DateTime.Now;
             _canSetDnd = false;
             _dndOn = false;
             _snapshot?.Clear(); // 断连即销毁快照，重连时手机重新批量补发
@@ -490,6 +516,7 @@ public partial class App : Application
         Ui.TryEnqueue(() =>
         {
             _phoneConnected = true;
+            _phoneDisconnectedSince = null;
             // 连接建立后把 Windows 气泡开关状态同步给手机
             _router?.SendWindowsToastState(_enableWindowsToast);
             RefreshLiveState();
@@ -541,6 +568,98 @@ public partial class App : Application
     }
 
     // ---- 蓝牙兜底：让手机连上 WiFi ----
+
+    /// <summary>托盘「自动连回 WiFi」勾选项。</summary>
+    private void OnAutoWifiToggle()
+    {
+        _config.AutoWifiFallback = !_config.AutoWifiFallback;
+        SaveConfig();
+        _tray?.SetAutoWifiState(_config.AutoWifiFallback);
+    }
+
+    /// <summary>
+    /// 自动兜底的条件检查：连着目标以太网 + 手机断开 30 秒以上 + 不在冷却期。
+    /// 蓝牙能不能扫到手机留到真正执行时判断，扫不到就静默跳过。
+    /// </summary>
+    private void CheckAutoWifi()
+    {
+        if (!_config.AutoWifiFallback) return;
+        if (_bleBusy) return;
+
+        // 20 秒内有包就算活着（手机每 15 秒发一次 ping）
+        if (PhoneReachable()) return;
+
+        // 假活按「最后一次收到包」算起；真断开按断开时刻算起
+        var deadSince = _phoneConnected
+            ? _router?.LastActivity ?? DateTime.Now
+            : _phoneDisconnectedSince ?? DateTime.Now;
+        _phoneDisconnectedSince = deadSince;
+
+        if ((DateTime.Now - deadSince).TotalSeconds < 30) return;
+        if ((DateTime.Now - _lastAutoWifiAttempt).TotalMinutes < 5) return;
+        if (_autoWifiAttempts >= 20) return;
+        if (!NetworkInfo.IsTargetEthernet(_config.TargetGatewayMac)) return;
+
+        _lastAutoWifiAttempt = DateTime.Now;
+        _autoWifiAttempts++;
+        _ = RunAutoWifiAsync();
+    }
+
+    /// <summary>
+    /// 手机是否真的在线：不但要连着，还得 20 秒内收到过包。
+    /// 关 WiFi 时 TCP 不会立刻断开（没有 FIN），只看「连接存在」会被骗。
+    /// </summary>
+    private bool PhoneReachable()
+    {
+        if (!_phoneConnected) return false;
+        var last = _router?.LastActivity ?? DateTime.MinValue;
+        return (DateTime.Now - last).TotalSeconds <= 20;
+    }
+
+    /// <summary>
+    /// 自动执行：先确认蓝牙能扫到手机，再弹「Ciallo」提示，最后下发指令。
+    /// 扫不到手机（没开蓝牙 / 推送服务没跑）就什么也不做，不打扰用户。
+    /// </summary>
+    private async Task RunAutoWifiAsync()
+    {
+        _bleBusy = true;
+        try
+        {
+            _bleClient ??= new BleClient();
+            if (!await _bleClient.PingAsync(TimeSpan.FromSeconds(20)))
+            {
+                LogAutoWifi("蓝牙没扫到手机，跳过");
+                return;
+            }
+
+            _toast?.ShowRaw("Ciallo～(∠・ω< )⌒★");
+            var reply = await _bleClient.RequestWifiAsync(TimeSpan.FromSeconds(60));
+            LogAutoWifi($"手机回复：{reply}");
+        }
+        catch (Exception ex)
+        {
+            LogAutoWifi($"失败：{ex.Message}");
+        }
+        finally
+        {
+            _bleBusy = false;
+        }
+    }
+
+    private void LogAutoWifi(string message)
+    {
+        try
+        {
+            var dir = Path.Combine(_dataDir, "logs");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "auto-wifi.log"),
+                $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // 忽略
+        }
+    }
 
     /// <summary>
     /// 托盘「让手机连上 WiFi」：走 BLE 把指令送到手机，手机用 Shizuku 的 shell

@@ -158,7 +158,23 @@ class BridgeClient(private val context: Context, private val listener: Listener)
                     else ConnectionState.AwaitingPair
                 )
                 sendPairRequest()
-                readLoop(s)
+                // 心跳：电脑靠「还有没有包进来」判断手机是否真的在线。
+                // WiFi 一关，TCP 不会立刻断开（没有 FIN），只有持续发包才能暴露出来。
+                val pingJob = scope.launch {
+                    while (running && socket === s) {
+                        delay(15_000)
+                        if (socket !== s) break
+                        sendPacket(
+                            BridgeProtocol.TYPE_PING,
+                            JSONObject().put("time", System.currentTimeMillis())
+                        )
+                    }
+                }
+                try {
+                    readLoop(s)
+                } finally {
+                    pingJob.cancel()
+                }
             } catch (e: Exception) {
                 // 连接失败或连接被断开
                 Log.w(TAG, "connect to $host:$port failed: ${e.message ?: e.javaClass.simpleName}")

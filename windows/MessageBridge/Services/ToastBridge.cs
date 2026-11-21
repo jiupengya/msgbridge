@@ -21,6 +21,10 @@ public sealed class ToastBridge
     private const string Tag = "msgbridge";
     private const string Group = "message";
 
+    /// <summary>「自动连回 WiFi」这类系统提示单独一组，免得顶掉消息通知。</summary>
+    private const string RawTag = "msgbridge-auto";
+    private const string RawGroup = "auto";
+
     private readonly string _logPath;
     private readonly object _logLock = new();
     private readonly Lazy<ToastNotifier> _notifier;
@@ -120,8 +124,44 @@ public sealed class ToastBridge
         }
     }
 
-    private void OnToastActivated(ToastNotification sender, object args)
+    /// <summary>
+    /// 只发一条纯文本通知：不设标题，正文就是全部内容。
+    /// 用独立 Tag + Group，不会顶掉正在显示的消息通知。
+    /// </summary>
+    public bool ShowRaw(string text)
     {
+        try
+        {
+            var xml = "<toast><visual><binding template=\"ToastGeneric\"><text>" +
+                      Escape(text) + "</text></binding></visual></toast>";
+            var doc = new XmlDocument();
+            doc.LoadXml(xml);
+            var toast = new ToastNotification(doc)
+            {
+                Tag = RawTag,
+                Group = RawGroup
+            };
+
+            try
+            {
+                ToastNotificationManager.History.Remove(RawTag, RawGroup, AumidShortcut.AppId);
+            }
+            catch
+            {
+                // 没有旧通知时忽略
+            }
+
+            _notifier.Value.Show(toast);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log($"ShowRaw failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private void OnToastActivated(ToastNotification sender, object args)    {
         try
         {
             var argument = (args as ToastActivatedEventArgs)?.Arguments;

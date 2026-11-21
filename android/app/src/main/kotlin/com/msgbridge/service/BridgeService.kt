@@ -34,8 +34,21 @@ class BridgeService : Service() {
 
     companion object {
         private const val TAG = "MsgBridge/Svc"
-        private const val CHANNEL_ID = "bridge_service"
+
+        /**
+         * 前台服务必须挂一条通知，Android 不允许应用自己撤掉它（cancel 会被系统拒绝）。
+         * 所以这条通知的定位是「能藏就藏」：优先级压到 MIN，用户还可以在系统的
+         * 通知设置里把这个 channel 直接关掉（设置页提供了入口）。
+         * v2 是为了把上一版 LOW 优先级的 channel 换掉 —— channel 的重要性创建后改不了。
+         */
+        private const val CHANNEL_ID = "bridge_service_v2"
+        private const val LEGACY_CHANNEL_ID = "bridge_service"
         private const val NOTIFICATION_ID = 1001
+
+        /** 「电脑请求连回 WiFi」的提示通知，单独的 channel 和 id，用户能看见 */
+        private const val WIFI_CHANNEL_ID = "wifi_request"
+        private const val WIFI_NOTIFICATION_ID = 1002
+
         const val ACTION_STOP = "com.msgbridge.action.STOP"
 
         fun start(context: Context) {
@@ -51,9 +64,9 @@ class BridgeService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    /** 前台通知节流：1 秒内不重复刷新（高频状态抖动时避免通知栏闪烁） */
-    private var lastNotifyAt = 0L
-    private var pendingText: String? = null
+    private val notificationManager by lazy {
+        getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    }
 
     private val wakeLock: PowerManager.WakeLock by lazy {
         (getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -79,11 +92,19 @@ class BridgeService : Service() {
         }
         bleServer = BleServer(applicationContext, scope) {
             withContext(Dispatchers.IO) {
-                val result = WifiControl.ensureOnTarget(
-                    Prefs.targetSsid, Prefs.targetWifiPassword
-                )
-                Log.i(TAG, "wifi request -> ${result.outcome} ${result.ssid} ${result.message}")
-                if (result.ok) "ok:${result.ssid}" else "err:${result.message.take(12)}"
+                // 先让用户看到一条提示，再动手
+                notifyWifiRequest()
+                try {
+                    val result = WifiControl.ensureOnTarget(
+                        Prefs.targetSsid, Prefs.targetWifiPassword
+                    )
+                    Log.i(TAG, "wifi request -> ${result.outcome} ${result.ssid} ${result.message}")
+                    if (result.ok) "ok:${result.ssid}" else "err:${result.message.take(12)}"
+                } finally {
+                    // 执行很快（WiFi 关→开通常 1~2 秒），通知多留一会儿才看得见
+                    delay(2_000)
+                    cancelWifiRequest()
+                }
             }
         }.also { it.start() }
     }
@@ -101,7 +122,11 @@ class BridgeService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.bridge_notif_text_idle)))
+        startForeground(NOTIFICATION_ID, buildNotification(""))
+        // 常驻通知只是前台服务的「入场券」：挂上之后立刻撤掉，通知栏里看不见，
+        // 但服务本身仍是前台状态，不会被系统当成后台服务回收。
+        notificationManager.cancel(NOTIFICATION_ID)
+
         if (!wakeLock.isHeld) {
             wakeLock.acquire()
         }
@@ -113,23 +138,6 @@ class BridgeService : Service() {
         BridgeController.setOnPaired {
             NotificationListener.instance?.syncCurrentNotifications()
             BridgeController.reportInterruptionState()
-        }
-
-        // 连接状态变化时更新常驻通知文本
-        scope.launch {
-            BridgeController.state.collectLatest { state ->
-                val text = when (state) {
-                    ConnectionState.Connected ->
-                        getString(
-                            R.string.bridge_notif_text_connected,
-                            BridgeController.peerName.value.ifEmpty { Prefs.host }
-                        )
-                    ConnectionState.AwaitingPair -> getString(R.string.bridge_notif_text_pairing)
-                    ConnectionState.Connecting -> getString(R.string.bridge_notif_text_connecting)
-                    ConnectionState.Disconnected -> getString(R.string.bridge_notif_text_idle)
-                }
-                notify(text)
-            }
         }
 
         return START_STICKY
@@ -147,41 +155,44 @@ class BridgeService : Service() {
     }
 
     private fun createChannel() {
-        val channel = NotificationChannel(
+        // 常驻服务的通知：挂上就被撤掉，用户看不到，优先级压到最低即可
+        val service = NotificationChannel(
             CHANNEL_ID,
             getString(R.string.bridge_channel_name),
-            NotificationManager.IMPORTANCE_LOW // 不响铃不震动不弹横幅，但常驻通知栏
+            NotificationManager.IMPORTANCE_MIN
         ).apply {
             setShowBadge(false)
             enableVibration(false)
+            setSound(null, null)
         }
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .createNotificationChannel(channel)
+        // 只在电脑请求连回 WiFi 时出现，要让用户注意到
+        val wifi = NotificationChannel(
+            WIFI_CHANNEL_ID,
+            "WiFi 兜底",
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            setShowBadge(false)
+        }
+        notificationManager.createNotificationChannels(listOf(service, wifi))
+
+        // 清掉上一版那条 LOW 优先级的 channel，免得在设置里多出一项
+        runCatching { notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
     }
 
-    private fun notify(text: String) {
-        // 节流：1 秒内合并多次更新，避免连接状态抖动导致通知栏高频刷新
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastNotifyAt >= 1000) {
-            lastNotifyAt = now
-            pushNotification(text)
-        } else if (pendingText == null) {
-            pendingText = text
-            scope.launch {
-                delay(1000)
-                pendingText?.let {
-                    pendingText = null
-                    pushNotification(it)
-                }
-            }
-        } else {
-            pendingText = text
-        }
+    /** 电脑请求连回 WiFi 之前先提示一下，执行完就撤掉 */
+    private fun notifyWifiRequest() {
+        val n = Notification.Builder(this, WIFI_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_notify)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("电脑请求连回 WiFi，正在处理…")
+            .setOngoing(true)
+            .setShowWhen(false)
+            .build()
+        notificationManager.notify(WIFI_NOTIFICATION_ID, n)
     }
 
-    private fun pushNotification(text: String) {
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(NOTIFICATION_ID, buildNotification(text))
+    private fun cancelWifiRequest() {
+        notificationManager.cancel(WIFI_NOTIFICATION_ID)
     }
 
     private fun buildNotification(text: String): Notification {

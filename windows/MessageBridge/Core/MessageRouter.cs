@@ -26,6 +26,12 @@ public sealed class PendingPair
 /// </summary>
 public sealed class MessageRouter
 {
+    /// <summary>
+    /// 最后一次收到手机任何包的时间。手机每 15 秒发一次 ping；
+    /// 超过 45 秒没有包，说明这条 TCP 只是「假活」（WiFi 关了但连接没收到 FIN）。
+    /// </summary>
+    public DateTime LastActivity { get; private set; } = DateTime.Now;
+
     /// <summary>配对请求（UI 弹窗展示 PIN），后台线程回调。</summary>
     public event Action<PendingPair>? PairRequested;
     /// <summary>配对结果：成功（true）/ 失败（false）。</summary>
@@ -127,6 +133,7 @@ public sealed class MessageRouter
 
     private void OnPacketReceived(BridgeConnection conn, Packet packet)
     {
+        LastActivity = DateTime.Now;
         switch (packet.Type)
         {
             case Packet.Types.PairRequest:

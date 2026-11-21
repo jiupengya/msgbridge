@@ -251,6 +251,21 @@ private fun PermissionSection(context: Context) {
                 BridgeController.requestShizukuPermission()
             }
         )
+
+        // 前台服务的通知 Android 不允许应用自己撤掉，只能让用户在这里关掉
+        ActionRow(
+            title = "隐藏常驻通知",
+            subtitle = "系统不允许应用自己撤掉前台通知，可以点进系统设置把它关掉",
+            onClick = {
+                runCatching {
+                    context.startActivity(
+                        Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            .putExtra(Settings.EXTRA_CHANNEL_ID, "bridge_service_v2")
+                    )
+                }
+            }
+        )
     }
 
     // 从系统设置页回来后重新读一次 Shizuku 授权（用户可能刚点过允许）
