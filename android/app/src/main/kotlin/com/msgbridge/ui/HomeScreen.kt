@@ -35,7 +35,6 @@ import com.msgbridge.core.BridgeController
 import com.msgbridge.core.BridgeProtocol
 import com.msgbridge.core.ConnectionState
 import com.msgbridge.core.Prefs
-import com.msgbridge.core.ShizukuHelper
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Surface
@@ -280,9 +279,10 @@ private fun SwitchesCard() {
 
 @Composable
 private fun WifiFallbackCard() {
-    val context = LocalContext.current
     val fallbackEnabled = remember { mutableStateOf(Prefs.wifiFallbackEnabled) }
-    val shizukuReady = remember { ShizukuHelper.hasPermission() }
+    // 用 StateFlow 而不是 remember(hasPermission())：从 Shizuku 回来时 onResume
+    // 会刷新状态，页面才会跟着变。
+    val shizukuReady by BridgeController.shizukuReady.collectAsState()
     val target = remember { Prefs.targetSsid }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
