@@ -520,6 +520,8 @@ public partial class App : Application
             // 连接建立后把 Windows 气泡开关状态同步给手机
             _router?.SendWindowsToastState(_enableWindowsToast);
             RefreshLiveState();
+            // 手机连上电脑就弹这一句，不带任何状态文字
+            _toast?.ShowRaw("Ciallo～(∠・ω< )⌒★");
         });
     }
 
@@ -632,7 +634,7 @@ public partial class App : Application
                 return;
             }
 
-            _toast?.ShowRaw("Ciallo～(∠・ω< )⌒★");
+            // 不弹电脑通知：这条链路是「悄悄把网修好」，只在日志里留痕
             var reply = await _bleClient.RequestWifiAsync(TimeSpan.FromSeconds(60));
             LogAutoWifi($"手机回复：{reply}");
         }
@@ -727,11 +729,13 @@ public partial class App : Application
                 _router?.SendWindowsToastState(_enableWindowsToast);
                 RefreshLiveState();
             }
-
-            var text = ok
-                ? $"已与 {conn.DeviceName} 完成配对"
-                : $"与 {conn.DeviceName} 配对失败（PIN 不正确或已过期）";
-            ShowToast("Message · 配对", text, null, false);
+            else
+            {
+                ShowToast(
+                    "Message · 配对",
+                    $"与 {conn.DeviceName} 配对失败（PIN 不正确或已过期）",
+                    null, false);
+            }
         });
     }
 
