@@ -23,6 +23,7 @@ public sealed class BleClient : IDisposable
 
     private ulong? _lastAddress;
     private BluetoothLEDevice? _device;
+    private GattSession? _session;
 
     public event Action<string>? Log;
 
@@ -148,39 +149,70 @@ public sealed class BleClient : IDisposable
             Log?.Invoke($"ble: 连接 0x{address:X12}");
 
             _device = await BluetoothLEDevice.FromBluetoothAddressAsync(address)
-                .AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false)
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("找不到手机蓝牙设备");
 
             _device.ConnectionStatusChanged += (_, _) =>
                 Log?.Invoke($"ble: 连接状态 {_device?.ConnectionStatus}");
+
+            // Windows 默认在两次 GATT 操作之间断开空闲连接，重连期间
+            // ConnectionStatus 会疯狂抖动，服务发现很容易撞上超时。
+            // 显式持有 GattSession 把链路留住。
+            try
+            {
+                _session = await GattSession
+                    .FromDeviceIdAsync(_device.BluetoothDeviceId)
+                    .AsTask().WaitAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+                if (_session != null) _session.MaintainConnection = true;
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"ble: 建会话失败（{ex.Message}），继续尝试");
+            }
         }
 
         // 刚拿到的 device 往往还是 Disconnected，直接去发现服务会拿到 Unreachable
         for (var i = 0; i < 30 && _device.ConnectionStatus != BluetoothConnectionStatus.Connected; i++)
             await Task.Delay(100, ct).ConfigureAwait(false);
 
+        // 一次拿全部服务再自己挑：按 UUID 单查在部分适配器上会返回空/超时
         GattDeviceServicesResult? services = null;
         for (var i = 0; i < 3; i++)
         {
-            services = await _device.GetGattServicesForUuidAsync(ServiceUuid, BluetoothCacheMode.Uncached)
-                .AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
-            if (services.Status == GattCommunicationStatus.Success) break;
+            services = await _device.GetGattServicesAsync(BluetoothCacheMode.Uncached)
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+            if (services.Status == GattCommunicationStatus.Success && services.Services.Count > 0) break;
             Log?.Invoke($"ble: 服务发现 {services.Status}，重试");
             await Task.Delay(400, ct).ConfigureAwait(false);
         }
 
-        if (services == null || services.Status != GattCommunicationStatus.Success || services.Services.Count == 0)
+        if (services == null || services.Status != GattCommunicationStatus.Success)
             throw new InvalidOperationException($"没找到 GATT 服务：{services?.Status}");
 
-        var service = services.Services[0];
-        var commands = await service.GetCharacteristicsForUuidAsync(CommandUuid, BluetoothCacheMode.Uncached)
-            .AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
-        var states = await service.GetCharacteristicsForUuidAsync(StateUuid, BluetoothCacheMode.Uncached)
-            .AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
-        if (commands.Characteristics.Count == 0 || states.Characteristics.Count == 0)
+        var service = services.Services.FirstOrDefault(s => s.Uuid == ServiceUuid)
+            ?? throw new InvalidOperationException("没找到我们的 GATT 服务");
+
+        // 特征同样整体取再挑，单查偶发返回空
+        GattCharacteristicsResult? characteristics = null;
+        for (var i = 0; i < 3; i++)
+        {
+            characteristics = await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached)
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+            if (characteristics.Status == GattCommunicationStatus.Success &&
+                characteristics.Characteristics.Count > 0)
+            {
+                break;
+            }
+            Log?.Invoke($"ble: 特征发现 {characteristics.Status}，重试");
+            await Task.Delay(400, ct).ConfigureAwait(false);
+        }
+
+        var command = characteristics?.Characteristics.FirstOrDefault(c => c.Uuid == CommandUuid);
+        var state = characteristics?.Characteristics.FirstOrDefault(c => c.Uuid == StateUuid);
+        if (command == null || state == null)
             throw new InvalidOperationException("GATT 特征缺失");
 
-        return (_device, commands.Characteristics[0], states.Characteristics[0]);
+        return (_device, command, state);
     }
 
     private async Task<ulong> ScanAsync(TimeSpan timeout, CancellationToken ct)
@@ -235,6 +267,20 @@ public sealed class BleClient : IDisposable
 
     private void ResetDevice()
     {
+        try
+        {
+            if (_session != null)
+            {
+                _session.MaintainConnection = false;
+                _session.Dispose();
+            }
+        }
+        catch
+        {
+            // 断开阶段忽略
+        }
+        _session = null;
+
         try
         {
             if (_device != null)
