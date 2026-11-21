@@ -68,6 +68,18 @@ public sealed class BridgeServer : IDisposable
 
     public IReadOnlyCollection<BridgeConnection> Connections => _connections.Values.ToList();
 
+    /// <summary>
+    /// 主动断开所有连接。断掉后读循环会走 finally，正常触发 <see cref="Disconnected"/>，
+    /// 上层界面也就立刻从「已连接」变成「未连接」。
+    /// </summary>
+    public void DisconnectAll()
+    {
+        foreach (var conn in _connections.Values.ToList())
+        {
+            try { conn.Dispose(); } catch { }
+        }
+    }
+
     public void Start()
     {
         _cts = new CancellationTokenSource();

@@ -160,9 +160,10 @@ class BridgeClient(private val context: Context, private val listener: Listener)
                 sendPairRequest()
                 // 心跳：电脑靠「还有没有包进来」判断手机是否真的在线。
                 // WiFi 一关，TCP 不会立刻断开（没有 FIN），只有持续发包才能暴露出来。
+                // 3 秒一次是为了让电脑侧的判定能压到 10 秒以内。
                 val pingJob = scope.launch {
                     while (running && socket === s) {
-                        delay(15_000)
+                        delay(3_000)
                         if (socket !== s) break
                         sendPacket(
                             BridgeProtocol.TYPE_PING,

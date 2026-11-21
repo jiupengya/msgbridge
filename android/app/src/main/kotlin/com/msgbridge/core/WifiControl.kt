@@ -3,6 +3,8 @@ package com.msgbridge.core
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 手机 WiFi 控制（依赖 Shizuku 的 shell 身份）。
@@ -14,6 +16,9 @@ import kotlinx.coroutines.delay
 object WifiControl {
 
     private const val TAG = "MsgBridge/Wifi"
+
+    /** 同一时刻只允许一个「把 WiFi 连回来」的流程在跑 */
+    private val mutex = Mutex()
 
     data class Status(val enabled: Boolean, val ssid: String, val raw: String) {
         val connected: Boolean get() = ssid.isNotEmpty()
@@ -79,8 +84,14 @@ object WifiControl {
      *  2. WiFi 关着 → 打开，等系统自己连（家里这个网络是保存过的，通常 1~2 秒就回来）
      *  3. 开着但连错 → 关再开，让系统重新选网
      *  4. 还没好且给了密码 → `connect-network` 显式指定
+     *
+     * 同一时刻只允许一个执行：手机自己发现断网会立刻自愈，电脑那边也可能同时
+     * 发指令过来，两条「关→开」撞一起会把 WiFi 折腾坏。
      */
-    suspend fun ensureOnTarget(target: String, password: String?): Result {
+    suspend fun ensureOnTarget(target: String, password: String?): Result =
+        mutex.withLock { ensureOnTargetLocked(target, password) }
+
+    private suspend fun ensureOnTargetLocked(target: String, password: String?): Result {
         val begin = SystemClock.elapsedRealtime()
         fun elapsed() = SystemClock.elapsedRealtime() - begin
 

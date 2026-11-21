@@ -10,7 +10,6 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import android.os.IBinder
 import android.os.PowerManager
-import android.os.SystemClock
 import android.util.Log
 import com.msgbridge.R
 import com.msgbridge.core.BridgeController

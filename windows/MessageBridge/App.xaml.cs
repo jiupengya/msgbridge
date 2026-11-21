@@ -228,9 +228,9 @@ public partial class App : Application
         _server.Disconnected += OnServerDisconnected;
         _server.Connected += OnServerConnected;
 
-        // 自动 WiFi 兜底：每 10 秒看一次条件够不够
+        // 自动 WiFi 兜底：每 2 秒看一次条件够不够
         _autoWifiTimer = Ui.CreateTimer();
-        _autoWifiTimer.Interval = TimeSpan.FromSeconds(10);
+        _autoWifiTimer.Interval = TimeSpan.FromSeconds(2);
         _autoWifiTimer.Tick += (_, _) => CheckAutoWifi();
         _autoWifiTimer.Start();
 
@@ -588,16 +588,22 @@ public partial class App : Application
         if (!_config.AutoWifiFallback) return;
         if (_bleBusy) return;
 
-        // 20 秒内有包就算活着（手机每 15 秒发一次 ping）
+        // 6 秒内有包就算活着（手机每 3 秒发一次 ping）
         if (PhoneReachable()) return;
 
-        // 假活按「最后一次收到包」算起；真断开按断开时刻算起
-        var deadSince = _phoneConnected
-            ? _router?.LastActivity ?? DateTime.Now
-            : _phoneDisconnectedSince ?? DateTime.Now;
-        _phoneDisconnectedSince = deadSince;
+        // 连接还挂着但已经收不到包 → 假活。主动断开，界面才会立刻变成「未连接」。
+        if (_phoneConnected)
+        {
+            LogAutoWifi("连接假活，主动断开");
+            _phoneConnected = false;
+            _phoneDisconnectedSince = _router?.LastActivity ?? DateTime.Now;
+            _server?.DisconnectAll();
+            RefreshLiveState();
+        }
 
-        if ((DateTime.Now - deadSince).TotalSeconds < 30) return;
+        var deadSince = _phoneDisconnectedSince ?? DateTime.Now;
+        _phoneDisconnectedSince = deadSince;
+        if ((DateTime.Now - deadSince).TotalSeconds < 8) return;
         if ((DateTime.Now - _lastAutoWifiAttempt).TotalMinutes < 5) return;
         if (_autoWifiAttempts >= 20) return;
         if (!NetworkInfo.IsTargetEthernet(_config.TargetGatewayMac)) return;
@@ -608,14 +614,14 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 手机是否真的在线：不但要连着，还得 20 秒内收到过包。
+    /// 手机是否真的在线：不但要连着，还得 6 秒内收到过包。
     /// 关 WiFi 时 TCP 不会立刻断开（没有 FIN），只看「连接存在」会被骗。
     /// </summary>
     private bool PhoneReachable()
     {
         if (!_phoneConnected) return false;
         var last = _router?.LastActivity ?? DateTime.MinValue;
-        return (DateTime.Now - last).TotalSeconds <= 20;
+        return (DateTime.Now - last).TotalSeconds <= 6;
     }
 
     /// <summary>

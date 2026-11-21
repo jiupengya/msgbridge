@@ -27,8 +27,8 @@ public sealed class PendingPair
 public sealed class MessageRouter
 {
     /// <summary>
-    /// 最后一次收到手机任何包的时间。手机每 15 秒发一次 ping；
-    /// 超过 45 秒没有包，说明这条 TCP 只是「假活」（WiFi 关了但连接没收到 FIN）。
+    /// 最后一次收到手机任何包的时间。手机每 3 秒发一次 ping；
+    /// 超过 6 秒没有包，说明这条 TCP 只是「假活」（WiFi 关了但连接没收到 FIN）。
     /// </summary>
     public DateTime LastActivity { get; private set; } = DateTime.Now;
 
