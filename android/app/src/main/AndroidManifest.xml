@@ -16,6 +16,19 @@
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <!--
+      蓝牙：电脑通过 BLE 让手机打开 / 切换 WiFi 的带外通道。
+      WiFi 断开时 TCP 已经不可用，只有蓝牙还能把指令送进来。
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADVERTISE"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <!--
       「显示在其他应用的上层」（悬浮窗）。
       不是用来画悬浮窗的：电脑上点一条通知要在手机上打开对应应用，走的是
       「从后台启动界面」。Android 15 起系统一律拦这种启动，唯一的用户可授权
@@ -85,6 +98,17 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!--
+          Shizuku：用户已在手机上装了 Shizuku（adb 启动的 shell 服务端），
+          通过它执行 `cmd wifi`，才能在普通应用权限下真正开关 / 切换 WiFi。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false" />
 
         <!-- 开机自启 -->
         <receiver

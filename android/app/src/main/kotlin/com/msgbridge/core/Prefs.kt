@@ -55,4 +55,25 @@ object Prefs {
     var pairedDeviceId: String
         get() = sp.getString("paired_device_id", "") ?: ""
         set(value) = sp.edit().putString("paired_device_id", value).apply()
+
+    // ---------------- WiFi 兜底 ----------------
+
+    /** 电脑通过蓝牙要求手机连的 WiFi 名 */
+    var targetSsid: String
+        get() = sp.getString("target_ssid", "jiupengya-5G") ?: "jiupengya-5G"
+        set(value) = sp.edit().putString("target_ssid", value).apply()
+
+    /**
+     * 目标 WiFi 的密码，**可选**。
+     * 留空时只走「关→开，让系统自己连已保存网络」，通常就够；
+     * 填了的话在系统没连上时还能用 connect-network 精确指定。
+     */
+    var targetWifiPassword: String
+        get() = sp.getString("target_wifi_password", "") ?: ""
+        set(value) = sp.edit().putString("target_wifi_password", value).apply()
+
+    /** 是否允许电脑经蓝牙让手机打开 / 切换 WiFi */
+    var wifiFallbackEnabled: Boolean
+        get() = sp.getBoolean("wifi_fallback_enabled", true)
+        set(value) = sp.edit().putBoolean("wifi_fallback_enabled", value).apply()
 }

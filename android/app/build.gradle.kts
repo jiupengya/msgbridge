@@ -45,4 +45,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     // Miuix：小米 HyperOS 风格组件库（Compose Multiplatform）
     implementation("top.yukonga.miuix.kmp:miuix-android:0.8.8")
+    // Shizuku：以 shell 权限执行 cmd wifi，让电脑可以远程打开/切换手机 WiFi
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

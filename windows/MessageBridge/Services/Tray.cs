@@ -24,8 +24,10 @@ public sealed class Tray : IDisposable
     private NotifyIcon? _icon;
     private ToolStripMenuItem? _pauseItem;
     private ToolStripMenuItem? _startupItem;
+    private ToolStripMenuItem? _wifiItem;
     private bool _lightTaskbar = true;
     private bool _disposed;
+    private bool _wifiBusy;
 
     public event Action? OpenRequested;
     public event Action? ExitRequested;
@@ -35,6 +37,8 @@ public sealed class Tray : IDisposable
     public event Action? PauseToggleRequested;
     /// <summary>点击「开机自启」。</summary>
     public event Action? StartupToggleRequested;
+    /// <summary>点击「让手机连上 WiFi」：走蓝牙带外通道。</summary>
+    public event Action? WifiConnectRequested;
 
     /// <summary>左键单击后要等过双击窗口期，避免双击时也顺带触发一次单击。</summary>
     private bool _singleClickPending;
@@ -92,6 +96,13 @@ public sealed class Tray : IDisposable
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开 Message", null, (_, _) => OpenRequested?.Invoke());
+
+        // 蓝牙兜底：WiFi 断了只有这条路还能把「打开 WiFi」送进手机。
+        // 只有电脑插着有线以太网时才有意义（电脑自己也走 WiFi 时不做多余动作）。
+        _wifiItem = new ToolStripMenuItem("让手机连上 WiFi（蓝牙）", null,
+            (_, _) => WifiConnectRequested?.Invoke());
+        menu.Items.Add(_wifiItem);
+        menu.Opening += (_, _) => RefreshWifiItem();
 
         _pauseItem = new ToolStripMenuItem("暂停推送 30 分钟", null,
             (_, _) => PauseToggleRequested?.Invoke());
@@ -225,6 +236,32 @@ public sealed class Tray : IDisposable
         {
             if (_startupItem == null) return;
             _startupItem.Checked = enabled;
+        });
+
+    /// <summary>刷新「让手机连上 WiFi」的文案与可用性（菜单弹出时调用）。</summary>
+    private void RefreshWifiItem()
+    {
+        if (_wifiItem == null) return;
+        if (_wifiBusy)
+        {
+            _wifiItem.Enabled = false;
+            _wifiItem.Text = "正在通过蓝牙操作手机…";
+            return;
+        }
+
+        var ethernet = NetworkInfo.IsOnEthernet();
+        _wifiItem.Enabled = ethernet;
+        _wifiItem.Text = ethernet
+            ? "让手机连上 WiFi（蓝牙）"
+            : "让手机连上 WiFi（需要有线以太网）";
+    }
+
+    /// <summary>蓝牙操作进行中时置灰菜单项，避免重复触发。</summary>
+    public void SetWifiBusy(bool busy)
+        => Run(() =>
+        {
+            _wifiBusy = busy;
+            RefreshWifiItem();
         });
 
     public void ShowBalloon(string title, string text)

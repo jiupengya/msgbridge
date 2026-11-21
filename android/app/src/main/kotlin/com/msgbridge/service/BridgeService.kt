@@ -16,6 +16,7 @@ import com.msgbridge.R
 import com.msgbridge.core.BridgeController
 import com.msgbridge.core.ConnectionState
 import com.msgbridge.core.Prefs
+import com.msgbridge.core.WifiControl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +25,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 常驻前台服务：保持 TCP 长连接（参考 android-screen-off-survival 三件套）。
@@ -59,6 +61,33 @@ class BridgeService : Service() {
             .apply { setReferenceCounted(false) }
     }
 
+    /**
+     * 蓝牙带外通道：WiFi 断了只有它还能把「打开 WiFi」送进来。
+     * 指令执行耗时要几秒，放到 IO 线程，别卡住 GATT 回调。
+     */
+    private var bleServer: BleServer? = null
+
+    private fun startBleIfEnabled() {
+        if (!Prefs.wifiFallbackEnabled) {
+            Log.i(TAG, "wifi fallback disabled, BLE not started")
+            return
+        }
+        if (bleServer != null) return
+        if (!BleServer.hasPermissions(this)) {
+            Log.i(TAG, "bluetooth permission missing, BLE not started")
+            return
+        }
+        bleServer = BleServer(applicationContext, scope) {
+            withContext(Dispatchers.IO) {
+                val result = WifiControl.ensureOnTarget(
+                    Prefs.targetSsid, Prefs.targetWifiPassword
+                )
+                Log.i(TAG, "wifi request -> ${result.outcome} ${result.ssid} ${result.message}")
+                if (result.ok) "ok:${result.ssid}" else "err:${result.message.take(12)}"
+            }
+        }.also { it.start() }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -77,6 +106,7 @@ class BridgeService : Service() {
             wakeLock.acquire()
         }
         BridgeController.start(this)
+        startBleIfEnabled()
         Log.i(TAG, "service started, target=${Prefs.host}:${Prefs.port}")
 
         // 配对成功：同步存量通知做快照，并上报手机勿扰状态
@@ -107,6 +137,8 @@ class BridgeService : Service() {
 
     override fun onDestroy() {
         BridgeController.stop()
+        bleServer?.stop()
+        bleServer = null
         if (wakeLock.isHeld) {
             wakeLock.release()
         }

@@ -16,8 +16,9 @@ msgbridge/
 │   └── app/src/main/
 │       ├── kotlin/com/msgbridge/
 │       │   ├── core/             # 协议、TCP 客户端、偏好存储、连接控制器
-│       │   ├── service/          # 前台保活服务、通知监听、开机自启
-│       │   └── ui/               # Miuix 风格主界面（状态/配对/设置/权限）
+│       │   │                     # + ShizukuHelper（shell 执行）、WifiControl（WiFi 开关）
+│       │   ├── service/          # 前台保活服务、通知监听、开机自启、BLE 外设
+│       │   └── ui/               # Miuix 风格界面（主页 + 设置页）
 │       └── res/                  # 图标、主题、字符串
 └── windows/                      # Windows 端（.NET 8 WinUI 3 工程）
     ├── MessageBridge.sln
@@ -27,6 +28,8 @@ msgbridge/
     │   ├── PairWindow.xaml(.cs)  # 配对弹窗（显示 PIN）
     │   ├── Core/                 # 协议、TCP 服务端、信任存储、消息存储、快照存储
     │   ├── Services/Tray.cs      # 托盘图标（WinForms NotifyIcon，跟随系统主题换线条色）
+    │   ├── Services/BleClient.cs # BLE 客户端：扫描 / 连接 / 下发「打开 WiFi」
+    │   ├── Services/NetworkInfo.cs # 有线以太网判断（蓝牙兜底只在有线时可用）
     │   ├── Services/WindowScale.cs # 窗口 DPI 换算（逻辑像素 ↔ 物理像素）
     │   ├── Services/IconStore.cs # 图标落盘（JSON 只存文件名）
     │   ├── Services/ToastBridge.cs # 系统通知（合并/静默/方形图标）
@@ -187,6 +190,66 @@ Android 15 起，应用从后台启动界面会被系统一律拦下（`BAL_BLOC
 
 亮屏用 `FULL_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP`（10 秒超时自动释放）。它虽然被标记为废弃，但普通应用能用的「点亮屏幕」手段就它和 `setTurnScreenOn`（只能管自己的 Activity），这里只能用它。
 
+## WiFi 兜底：电脑通过蓝牙让手机连回 WiFi
+
+手机忘了开 WiFi、或者连错到别的网络时，TCP 通道直接没了，任何指令都送不进去。
+这条兜底链路完全绕开网络：
+
+```
+电脑（必须接有线以太网） ──BLE GATT──▶ 手机前台服务 ──Shizuku(shell)──▶ cmd wifi ...
+```
+
+### 为什么需要 Shizuku
+
+Android 10（API 29）起 `WifiManager.setWifiEnabled()` 已废弃，targetSdk ≥ 29 调用无效，
+普通应用没有任何公开 API 能开关 WiFi。而 `cmd wifi` 系列命令对 shell 身份放行，
+Shizuku 正好能把调用派生到 shell 身份上（它的服务端由 adb 启动，uid 就是 `shell`）。
+
+手机端拿到指令后执行的是这几条：
+
+| 目的 | 命令 |
+| --- | --- |
+| 查状态 | `cmd wifi status` |
+| 开 / 关 | `cmd wifi set-wifi-enabled enabled \| disabled` |
+| 精确连某个网络 | `cmd wifi connect-network <ssid> wpa2 <pwd>` |
+
+### 手机端的执行策略
+
+`WifiControl.ensureOnTarget()` 是幂等的：
+
+1. 已经连着目标网络 → 直接返回
+2. WiFi 是关的 → 打开，等系统自己连（家里这个网络是保存过的，通常 1~2 秒就回来）
+3. 开着但连错 → **关 → 开**，让系统重新选网
+4. 还没好、并且填了密码 → `connect-network` 精确指定
+
+所以**密码可以不填**：绝大多数情况下「关→开」就够了，系统会自己连回保存过的网络。
+密码只是兜底中的兜底，存在手机本地，电脑端永远不碰。
+
+### BLE 报文
+
+自定义 128 位 UUID 的服务，两个特征：`CMD`（写指令）、`STATE`（读 / 订阅状态）。
+默认 MTU 只有 23（有效载荷 20 字节），所以报文刻意做得极短：
+
+| 方向 | 内容 |
+| --- | --- |
+| 电脑 → 手机 | `wifi` / `ping` / `status` |
+| 手机 → 电脑 | `busy` → `ok:<ssid>` / `err:<原因>` / `pong` |
+
+### 为什么只在有线以太网时启用
+
+托盘菜单里的「让手机连上 WiFi」只在电脑**插着网线**时可用（`NetworkInfo.IsOnEthernet()`）。
+电脑自己也走 WiFi 时两台机器在同一张网里，链路本来就通，不做多余动作。
+
+### 已知限制
+
+- **Shizuku 服务必须活着**。非 root 设备上 Shizuku 由 adb 启动，手机重启后要重新启动一次；
+  服务端进程被杀之后指令就送不进去（手机端会回 `err:...`）。
+- 手机端广播用的是可解析随机地址，每次扫描拿到的 MAC 都不一样，
+  所以电脑端不缓存地址，每次重新扫描；连接失败会重扫重试（最多 3 次）。
+- Shizuku 的 `Process.exitValue()` 走 binder，进程没结束时服务端抛的是
+  `IllegalArgumentException` 而不是 JDK 约定的 `IllegalThreadStateException`，
+  所以 `waitFor(timeout)` 那套默认实现会直接炸。这里改成「stdout 读完 = 命令结束」，一个 binder 调用都不做。
+
 ## 与 KDE Connect 的实现对照
 
 ## 构建
@@ -237,18 +300,20 @@ cd android
 4. 托盘**左键**：打开主窗口的「实时通知」页（当前手机还挂着的通知 + 两个开关 + 清空按钮）。
 5. 托盘**双击** / 右键「打开 Message」：打开主窗口的「历史记录」页（读 `messages.json`）。
 6. 两页之间用窗口顶部的 `实时通知 / 历史记录` 切换，同一个窗口，不用来回开。
-7. 托盘右键菜单：**暂停推送 30 分钟**（暂停期间消息仍会记录，只是不弹通知）、**开机自启**（写 HKCU Run，不需要管理员）、**退出**。
+7. 托盘右键菜单：**让手机连上 WiFi（蓝牙）**（手机忘了开 WiFi / 连错网络时用，只在电脑接有线网时可用）、**暂停推送 30 分钟**（暂停期间消息仍会记录，只是不弹通知）、**开机自启**（写 HKCU Run，不需要管理员）、**退出**。
 8. 连续多条通知会合并显示成「N 条新消息」+ 最近 3 条摘要；手机端标记为静默的通知在电脑端也不发声。
 
 **手机端**
 1. 安装 APK，打开「Message」。
 2. 填写电脑 IP 与端口（默认 17001），开启「推送服务」。
-3. 按提示授予权限：**通知使用权**（推送通知必需）、**通知显示**（Android 13+ 显示常驻通知）、**勿扰访问权限**（电脑远程开关勿扰必需）、**显示在其他应用的上层**（在电脑上点通知时直接打开应用必需，见上文）、**忽略电池优化**。
+3. 按提示授予权限：**通知使用权**（推送通知必需）、**通知显示**（Android 13+ 显示常驻通知）、**勿扰访问权限**（电脑远程开关勿扰必需）、**显示在其他应用的上层**（在电脑上点通知时直接打开应用必需，见上文）、**忽略电池优化**、**Shizuku 授权**（电脑经蓝牙开关 WiFi 必需，见上文）。
+   权限、使用说明这些配一次就很少动的内容都在右上角齿轮进入的**设置页**里，主页只留状态和常用开关。
 4. 连接后输入电脑端显示的 PIN 完成配对。
 5. 之后手机的通知会自动推送到电脑（是否弹气泡看电脑侧的开关）。
-6. 「系统开关」里可以直接改「电脑系统通知（气泡）」和「手机勿扰」，状态跟电脑实时同步。
-7. 不需要界面时点「隐藏到后台（从最近任务移除）」：界面与最近任务项都会消失，推送服务继续常驻。
-8. 下拉控制中心里有一个「Message」快捷开关，可以一键开关推送服务，和 App 内「推送服务」开关状态始终一致。
+6. 主页「推送」区里可以直接改「电脑系统通知（气泡）」和「手机勿扰」，状态跟电脑实时同步。
+7. 设置页「WiFi 兜底」里填目标 WiFi 名（默认 `jiupengya-5G`），密码可留空；主页上有「现在就让手机连回」按钮，不用电脑也能验证这条链路。
+8. 不需要界面时点「隐藏到后台（从最近任务移除）」：界面与最近任务项都会消失，推送服务继续常驻。
+9. 下拉控制中心里有一个「Message」快捷开关，可以一键开关推送服务，和 App 内「推送服务」开关状态始终一致。
 
 ### 小米/MIUI/HyperOS 保活提示
 
@@ -267,6 +332,11 @@ cd android
 - 窗口尺寸：150% 缩放的屏幕上按 `GetDpiForWindow` 换算物理像素，主窗口 940×700 DIP 与设计稿一致（`AppWindow.MoveAndResize` 在这台机器上会多除一次缩放系数，故改用 `SetWindowPos`）。
 - 勿扰：从 `INTERRUPTION_FILTER_NONE` 改成 `PRIORITY`，只压通知、不再把手机铃声一起静音；设置后读回系统值确认是否真的生效。
 - 托盘图标：纯色线条样式，`SystemUsesLightTheme=0`（深色任务栏）时用 `tray_light.ico`，浅色任务栏时用 `tray_dark.ico`，切换系统主题会实时换图。
+- WiFi 兜底（HyperOS 3 / Android 16，Shizuku 13.6 由 adb 启动）：
+  - `cmd wifi` 全命令可用；`cmd wifi set-wifi-enabled disabled → enabled` 后系统 **1.3 秒**自动连回 `jiupengya-5G`，所以主路径不需要密码。
+  - 端到端：熄屏 + WiFi 关闭 → 电脑托盘触发 → BLE 写 `wifi` → 手机执行 → 回 `ok:jiupengya-5G`，全程约 **10 秒**（含扫描、连接、关→开、连回）。
+  - 无线开关（`Wifi is enabled/disabled`）与连回的 SSID 均由 `cmd wifi status` 解析确认。
+  - 蓝牙链路单独验证：`MessageBridge.exe --ble-test` 会把扫描 / 连接 / ping / 指令过程写进 `ble-test.log`（不弹窗、结束后自动退出）。
 
 ## 数据存放（Windows）
 

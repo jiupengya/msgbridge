@@ -18,8 +18,12 @@ import android.view.View
 import android.view.WindowManager
 import com.msgbridge.service.BridgeService
 import com.msgbridge.service.NotificationListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
@@ -188,13 +192,43 @@ object BridgeController {
     /** 点亮屏幕用的唤醒锁最长持有时间（到点自动释放，不用手动 release）。 */
     private const val SCREEN_WAKE_TIMEOUT_MS = 10_000L
 
+    // ---------------- Shizuku / WiFi 兜底 ----------------
+
+    private val _shizukuReady = MutableStateFlow(false)
+    /** 是否已拿到 Shizuku 授权；没有的话普通应用开不了 WiFi */
+    val shizukuReady: StateFlow<Boolean> = _shizukuReady
+
+    /** 页面回到前台时刷新 Shizuku 授权状态 */
+    fun refreshShizukuState() {
+        _shizukuReady.value = ShizukuHelper.hasPermission()
+    }
+
+    /** 拉起 Shizuku 授权框（必须在 Activity 存活时调用） */
+    fun requestShizukuPermission() {
+        ShizukuHelper.requestPermission()
+        refreshShizukuState()
+    }
+
+    /**
+     * 手机本机上手动触发一次「连回目标 WiFi」，方便不依赖电脑验证整条链路。
+     * 回调在主线程。
+     */
+    fun ensureTargetWifi(onResult: (String) -> Unit) {
+        appContext ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            val result = WifiControl.ensureOnTarget(
+                Prefs.targetSsid, Prefs.targetWifiPassword
+            )
+            withContext(Dispatchers.Main) { onResult(result.message) }
+        }
+    }
+
     /**
      * 是否有「显示在其他应用的上层」权限。
      * 不是用来画悬浮窗的，而是「从后台打开应用」唯一能拿到的用户豁免，详见
      * [startActivityAllowingBackground]。
      */
-    fun hasOverlayPermission(): Boolean {
-        val ctx = appContext ?: return false
+    fun hasOverlayPermission(): Boolean {        val ctx = appContext ?: return false
         return try {
             Settings.canDrawOverlays(ctx)
         } catch (e: Exception) {

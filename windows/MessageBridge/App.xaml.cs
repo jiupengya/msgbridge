@@ -63,6 +63,10 @@ public partial class App : Application
 
     private Config _config = new();
 
+    /// <summary>蓝牙带外通道（懒创建，第一次用才连设备）。</summary>
+    private BleClient? _bleClient;
+    private bool _bleBusy;
+
     private static readonly JsonSerializerOptions ConfigJson = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -77,9 +81,50 @@ public partial class App : Application
         InitializeComponent();
     }
 
+    /// <summary>
+    /// 诊断入口：`MessageBridge.exe --ble-test` 只跑一次蓝牙通道并把过程写进
+    /// ble-test.log，然后退出。用来在没人点托盘的时候验证 BLE 链路是否通。
+    /// </summary>
+    private async void RunBleSelfTest()
+    {
+        var log = new System.Text.StringBuilder();
+        try
+        {
+            log.AppendLine($"ethernet: {NetworkInfo.IsOnEthernet()} / {NetworkInfo.DescribeEthernet()}");
+            using var ble = new BleClient();
+            ble.Log += line => log.AppendLine(line);
+            log.AppendLine("scan+connect+ping ...");
+            log.AppendLine("ping: " + await ble.PingAsync(TimeSpan.FromSeconds(20)));
+            log.AppendLine("requesting wifi ...");
+            var reply = await ble.RequestWifiAsync(TimeSpan.FromSeconds(45));
+            log.AppendLine("wifi reply: " + reply);
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine("error: " + ex);
+        }
+
+        try
+        {
+            File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "ble-test.log"), log.ToString());
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        Exit();
+    }
+
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         Ui = DispatcherQueue.GetForCurrentThread();
+
+        if (Environment.GetCommandLineArgs().Contains("--ble-test"))
+        {
+            RunBleSelfTest();
+            return;
+        }
 
         // 兜底：任何未处理异常都写一份日志，避免以后只有系统弹窗、没有线索
         UnhandledException += (_, e) =>
@@ -157,6 +202,7 @@ public partial class App : Application
         _tray.ExitRequested += () => Ui.TryEnqueue(OnTrayExit);
         _tray.PauseToggleRequested += () => Ui.TryEnqueue(OnPauseToggle);
         _tray.StartupToggleRequested += () => Ui.TryEnqueue(OnStartupToggle);
+        _tray.WifiConnectRequested += () => Ui.TryEnqueue(() => _ = OnWifiConnectAsync());
         _tray.SetStartupState(StartupRegistry.IsEnabled());
         _tray.SetPauseState(false, "暂停推送 30 分钟");
 
@@ -494,6 +540,49 @@ public partial class App : Application
         _tray?.SetStartupState(StartupRegistry.IsEnabled());
     }
 
+    // ---- 蓝牙兜底：让手机连上 WiFi ----
+
+    /// <summary>
+    /// 托盘「让手机连上 WiFi」：走 BLE 把指令送到手机，手机用 Shizuku 的 shell
+    /// 身份执行 `cmd wifi`。只在电脑接着有线以太网时可用。
+    /// </summary>
+    private async Task OnWifiConnectAsync()
+    {
+        if (_bleBusy) return;
+        if (!NetworkInfo.IsOnEthernet())
+        {
+            _tray?.ShowBalloon("手机 WiFi", "电脑当前没有插有线以太网，不启用蓝牙兜底。");
+            return;
+        }
+
+        _bleBusy = true;
+        _tray?.SetWifiBusy(true);
+        try
+        {
+            _bleClient ??= new BleClient();
+            var reply = await _bleClient.RequestWifiAsync(TimeSpan.FromSeconds(45));
+            if (reply.StartsWith("ok:", StringComparison.Ordinal))
+            {
+                var ssid = reply[3..];
+                _tray?.ShowBalloon("手机 WiFi", $"手机已连上 {ssid}。");
+            }
+            else
+            {
+                _tray?.ShowBalloon("手机 WiFi", $"没成功：{reply.TrimStart('e', 'r', 'r', ':')}");
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog(ex);
+            _tray?.ShowBalloon("手机 WiFi", $"蓝牙通道失败：{ex.Message}");
+        }
+        finally
+        {
+            _bleBusy = false;
+            _tray?.SetWifiBusy(false);
+        }
+    }
+
     // ---- 配对 ----
 
     private void OnPairRequested(PendingPair pending)
@@ -617,6 +706,7 @@ public partial class App : Application
             _mainWindow?.Close();
             _tray?.Dispose();
             _server?.Dispose();
+            _bleClient?.Dispose();
         }
         catch (Exception ex)
         {
