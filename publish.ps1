@@ -9,10 +9,17 @@
 #   4. repoint the startup entry; drop the old shortcut so the app rebuilds
 #      it with its AppUserModelID (Toast depends on that)
 
-$ErrorActionPreference = 'Stop'
+# 注意：这里不用 $ErrorActionPreference='Stop'。
+# PowerShell 5.1 下它会把原生命令写到 stderr 的普通提示也当成终止错误，
+# dotnet 一输出警告脚本就中断了。所有关键步骤改用 $LASTEXITCODE 显式判断。
 $root = $PSScriptRoot
+if ([string]::IsNullOrEmpty($root)) {
+    $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
 $target = 'C:\APP\message'
 $exe = Join-Path $target 'MessageBridge.exe'
+
+Write-Host "==> repo root: $root" -ForegroundColor Cyan
 
 Write-Host '==> stopping running instance' -ForegroundColor Cyan
 Get-Process MessageBridge -ErrorAction SilentlyContinue |
@@ -22,7 +29,23 @@ Start-Sleep -Seconds 1
 Write-Host "==> publishing to $target" -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $target -Force | Out-Null
 $project = Join-Path $root 'windows\MessageBridge\MessageBridge.csproj'
-dotnet publish $project -c Release -r win-x64 --self-contained false -o $target -p:DebugType=None -p:DebugSymbols=false
+
+# 先显式 build 一次：resources.pri 是 NoVsAppx.targets 里 AfterTargets="Build"
+# 钩子生成的，直接 publish 时这个钩子可能因为增量构建被跳过，导致目标目录缺 pri，
+# 启动就 XamlParseException。
+$buildLog = Join-Path $env:TEMP 'msgbridge-build.log'
+dotnet build $project -c Release -r win-x64 *> $buildLog
+if ($LASTEXITCODE -ne 0) {
+    Get-Content $buildLog | Select-Object -Last 25
+    throw "dotnet build failed (exit $LASTEXITCODE)"
+}
+
+$binDir = Join-Path $root 'windows\MessageBridge\bin'
+$pri = Get-ChildItem $binDir -Recurse -Filter 'resources.pri' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $pri) { throw "resources.pri not found under $binDir" }
+
+dotnet publish $project -c Release -r win-x64 --no-build -o $target -p:DebugType=None -p:DebugSymbols=false
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
 
 $apk = Join-Path $root 'android\app\build\outputs\apk\debug\app-debug.apk'
@@ -32,6 +55,12 @@ if (Test-Path $apk) {
 } else {
     Write-Host '==> android apk not found, skipped' -ForegroundColor Yellow
 }
+
+# resources.pri 由 NoVsAppx.targets 的 AfterBuild 钩子生成在 bin 里，
+# publish 不认识它（AddPriPayloadFilesToCopyToOutputDirectoryItems 被清空了），
+# 少了它会 XamlParseException 直接起不来。
+Copy-Item $pri.FullName (Join-Path $target 'resources.pri') -Force
+Write-Host "==> resources.pri copied ($($pri.Length) bytes)" -ForegroundColor Cyan
 
 Write-Host '==> updating startup entry' -ForegroundColor Cyan
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Message' -Value "`"$exe`""
