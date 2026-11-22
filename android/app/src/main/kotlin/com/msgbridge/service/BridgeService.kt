@@ -108,6 +108,30 @@ class BridgeService : Service() {
         }.also { it.start() }
     }
 
+    /** 经典蓝牙 SPP：配对后电脑可以直接连，手机不需要广播。 */
+    private var sppServer: SppServer? = null
+
+    private fun startSppIfEnabled() {
+        if (!Prefs.wifiFallbackEnabled) {
+            Log.i(TAG, "wifi fallback disabled, SPP not started")
+            return
+        }
+        if (sppServer != null) return
+        sppServer = SppServer(applicationContext, scope) { command ->
+            when {
+                command.startsWith("ping") -> "pong"
+                command.startsWith("wifi") -> {
+                    val result = WifiControl.ensureOnTarget(
+                        Prefs.targetSsid, Prefs.targetWifiPassword
+                    )
+                    Log.i(TAG, "spp wifi -> ${result.outcome} ${result.ssid} ${result.message}")
+                    if (result.ok) "ok:${result.ssid}" else "err:${result.message.take(12)}"
+                }
+                else -> "err:cmd"
+            }
+        }.also { it.start() }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -131,6 +155,7 @@ class BridgeService : Service() {
         }
         BridgeController.start(this)
         startBleIfEnabled()
+        startSppIfEnabled()
         Log.i(TAG, "service started, target=${Prefs.host}:${Prefs.port}")
 
         // 配对成功：同步存量通知做快照，并上报手机勿扰状态
@@ -146,6 +171,8 @@ class BridgeService : Service() {
         BridgeController.stop()
         bleServer?.stop()
         bleServer = null
+        sppServer?.stop()
+        sppServer = null
         if (wakeLock.isHeld) {
             wakeLock.release()
         }

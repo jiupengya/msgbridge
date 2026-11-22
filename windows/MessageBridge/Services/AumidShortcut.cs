@@ -16,6 +16,30 @@ public static class AumidShortcut
     public const string AppId = "MessageBridge.App";
     public const string DisplayName = "Message";
 
+    /// <summary>
+    /// 以 MSIX 包身份运行时，AUMID 由系统按「包族名!应用 Id」生成，
+    /// 这时不需要也不该再去伪造快捷方式。
+    /// </summary>
+    public static bool IsPackaged { get; } = DetectPackaged();
+
+    /// <summary>Toast 要用的 AUMID：打包时取包的，绿色版时取自己注册的。</summary>
+    public static string Aumid => IsPackaged
+        ? $"{Windows.ApplicationModel.Package.Current.Id.FamilyName}!App"
+        : AppId;
+
+    private static bool DetectPackaged()
+    {
+        try
+        {
+            return Windows.ApplicationModel.Package.Current != null;
+        }
+        catch
+        {
+            // 未打包时访问 Package.Current 会抛异常
+            return false;
+        }
+    }
+
     private const string LnkName = "Message.lnk";
     // 旧版本留下的快捷方式名，启动时清理掉，避免开始菜单出现两个同名应用
     private const string LegacyLnkName = "消息桥.lnk";
@@ -27,6 +51,9 @@ public static class AumidShortcut
     {
         try
         {
+            // 打包应用自带正规身份，不需要伪造快捷方式
+            if (IsPackaged) return;
+
             var exe = Environment.ProcessPath;
             if (string.IsNullOrEmpty(exe)) return;
             RemoveLegacyShortcut();

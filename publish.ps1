@@ -69,6 +69,21 @@ Write-Host "==> resources.pri + $copiedXbf xbf copied" -ForegroundColor Cyan
 Write-Host '==> updating startup entry' -ForegroundColor Cyan
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Message' -Value "`"$exe`""
 
+# MSIX 清单和图标：打包后才能声明 bluetooth capability，
+# 访问已配对的蓝牙设备才不会被 AccessDenied。
+Write-Host '==> installing package manifest' -ForegroundColor Cyan
+Copy-Item (Join-Path $root 'windows\MessageBridge\AppxManifest.xml') $target -Force
+$assetsDst = Join-Path $target 'Assets'
+New-Item -ItemType Directory -Path $assetsDst -Force | Out-Null
+Copy-Item (Join-Path $root 'windows\MessageBridge\AppxAssets\*.png') $assetsDst -Force
+
+if (-not (Get-AppxPackage -Name MessageBridge -ErrorAction SilentlyContinue)) {
+    Add-AppxPackage -Register (Join-Path $target 'AppxManifest.xml')
+    Write-Host '==> package registered (loose, dev mode)' -ForegroundColor Cyan
+} else {
+    Write-Host '==> package already registered' -ForegroundColor Cyan
+}
+
 # 快捷方式不在这里动：它带着 AppUserModelID（Toast 靠这个身份），
 # 用 WScript.Shell 重建会弄丢；而删掉再让应用重建又可能冒出「Message (2).lnk」。
 # 应用每次启动都会自己校验 TargetPath，发现指向旧路径就原地覆盖重建，交给它即可。

@@ -46,7 +46,7 @@ public sealed class ToastBridge
     {
         _logPath = Path.Combine(dataDir, "logs", "toast.log");
         _notifier = new Lazy<ToastNotifier>(() =>
-            ToastNotificationManager.CreateToastNotifier(AumidShortcut.AppId));
+            ToastNotificationManager.CreateToastNotifier(AumidShortcut.Aumid));
     }
 
     /// <summary>弹出系统通知；返回是否成功提交给系统。</summary>
@@ -107,7 +107,7 @@ public sealed class ToastBridge
             // 先清掉上一条同 Tag 通知，避免系统排队导致后面的通知等好几秒
             try
             {
-                ToastNotificationManager.History.Remove(Tag, Group, AumidShortcut.AppId);
+                ToastNotificationManager.History.Remove(Tag, Group, AumidShortcut.Aumid);
             }
             catch
             {
@@ -144,7 +144,7 @@ public sealed class ToastBridge
 
             try
             {
-                ToastNotificationManager.History.Remove(RawTag, RawGroup, AumidShortcut.AppId);
+                ToastNotificationManager.History.Remove(RawTag, RawGroup, AumidShortcut.Aumid);
             }
             catch
             {

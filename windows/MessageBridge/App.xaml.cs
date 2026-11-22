@@ -76,13 +76,39 @@ public partial class App : Application
 
         /// <summary>手机连不上时，是否自动经蓝牙让手机连回 WiFi。</summary>
         public bool AutoWifiFallback { get; set; } = true;
+
+        /// <summary>
+        /// 已配对手机的**经典蓝牙 MAC**（配对后固定不变）。
+        /// 电脑靠它直接连手机的 SPP 端口，不需要广播发现。
+        /// </summary>
+        public string PhoneBluetoothMac { get; set; } = "68:C4:4C:3F:B3:D3";
     }
 
     private Config _config = new();
 
     /// <summary>蓝牙带外通道（懒创建，第一次用才连设备）。</summary>
     private BleClient? _bleClient;
+    private SppClient? _sppClient;
     private bool _bleBusy;
+
+    /// <summary>把 "68:C4:4C:3F:B3:D3" 这种 MAC 文本转成 BluetoothAddress。</summary>
+    private static ulong ParseMac(string mac)
+    {
+        var hex = mac.Replace(":", "").Replace("-", "").Trim();
+        return ulong.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var v)
+            ? v
+            : 0UL;
+    }
+
+    private SppClient GetSppClient()
+    {
+        if (_sppClient == null)
+        {
+            _sppClient = new SppClient();
+            _sppClient.Log += LogAutoWifi;
+        }
+        return _sppClient;
+    }
 
     private static readonly JsonSerializerOptions ConfigJson = new()
     {
@@ -92,6 +118,81 @@ public partial class App : Application
     };
 
     private bool IsPaused => _pauseUntil.HasValue && DateTime.Now < _pauseUntil.Value;
+
+    /// <summary>
+    /// 诊断入口：`MessageBridge.exe --spp-test` 走经典蓝牙 RFCOMM 连接手机，
+    /// 发一次 ping 并读回包，结果写进 spp-test.log。
+    /// </summary>
+    private async void RunSppSelfTest()
+    {
+        var log = new System.Text.StringBuilder();
+        try
+        {
+            // 手机经典蓝牙 MAC（配对后固定）
+            const ulong address = 0x68C44C3FB3D3;
+            var device = await Windows.Devices.Bluetooth.BluetoothDevice
+                .FromBluetoothAddressAsync(address);
+            log.AppendLine($"device: {device?.Name} / {device?.ConnectionStatus}");
+
+            if (device != null)
+            {
+                var id = Windows.Devices.Bluetooth.Rfcomm.RfcommServiceId.FromUuid(
+                    Guid.Parse("00001101-0000-1000-8000-00805F9B34FB"));
+                var services = await device.GetRfcommServicesForIdAsync(
+                    id, Windows.Devices.Bluetooth.BluetoothCacheMode.Uncached);
+                log.AppendLine($"services: {services.Error} count={services.Services.Count}");
+
+                if (services.Services.Count > 0)
+                {
+                    var service = services.Services[0];
+                    log.AppendLine(
+                        $"host={service.ConnectionHostName} name={service.ConnectionServiceName}");
+
+                    // 用 StreamSocket 连 RFCOMM 服务名，比自己开 socket 更省事
+                    var socket = new Windows.Networking.Sockets.StreamSocket();
+                    try
+                    {
+                        await socket.ConnectAsync(
+                            service.ConnectionHostName, service.ConnectionServiceName);
+                        log.AppendLine("socket connected");
+
+                        var writer = new Windows.Storage.Streams.DataWriter(socket.OutputStream);
+                        writer.WriteString("ping\n");
+                        await writer.StoreAsync();
+                        writer.DetachStream();
+
+                        var reader = new Windows.Storage.Streams.DataReader(socket.InputStream)
+                        {
+                            InputStreamOptions =
+                                Windows.Storage.Streams.InputStreamOptions.Partial
+                        };
+                        var read = await reader.LoadAsync(64);
+                        var text = read > 0 ? reader.ReadString(read) : "";
+                        log.AppendLine($"reply: {text.Trim()}");
+                    }
+                    finally
+                    {
+                        socket.Dispose();
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine("error: " + ex);
+        }
+
+        try
+        {
+            File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "spp-test.log"), log.ToString());
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        Exit();
+    }
 
     public App()
     {
@@ -140,6 +241,12 @@ public partial class App : Application
         if (Environment.GetCommandLineArgs().Contains("--ble-test"))
         {
             RunBleSelfTest();
+            return;
+        }
+
+        if (Environment.GetCommandLineArgs().Contains("--spp-test"))
+        {
+            RunSppSelfTest();
             return;
         }
 
@@ -633,15 +740,14 @@ public partial class App : Application
         _bleBusy = true;
         try
         {
-            _bleClient ??= new BleClient();
-            if (!await _bleClient.PingAsync(TimeSpan.FromSeconds(20)))
+            var address = ParseMac(_config.PhoneBluetoothMac);
+            // 不弹电脑通知：这条链路是「悄悄把网修好」，只在日志里留痕
+            var reply = await GetSppClient().RequestWifiAsync(address, TimeSpan.FromSeconds(30));
+            if (reply == null)
             {
-                LogAutoWifi("蓝牙没扫到手机，跳过");
+                LogAutoWifi("SPP 连不上手机，跳过");
                 return;
             }
-
-            // 不弹电脑通知：这条链路是「悄悄把网修好」，只在日志里留痕
-            var reply = await _bleClient.RequestWifiAsync(TimeSpan.FromSeconds(60));
             LogAutoWifi($"手机回复：{reply}");
         }
         catch (Exception ex)
@@ -686,8 +792,14 @@ public partial class App : Application
         _tray?.SetWifiBusy(true);
         try
         {
-            _bleClient ??= new BleClient();
-            var reply = await _bleClient.RequestWifiAsync(TimeSpan.FromSeconds(45));
+            var address = ParseMac(_config.PhoneBluetoothMac);
+            var reply = await GetSppClient().RequestWifiAsync(address, TimeSpan.FromSeconds(30));
+            if (reply == null)
+            {
+                _tray?.ShowBalloon("手机 WiFi", "蓝牙连不上手机，确认手机开着蓝牙且推送服务在运行。");
+                return;
+            }
+
             if (reply.StartsWith("ok:", StringComparison.Ordinal))
             {
                 var ssid = reply[3..];
@@ -836,6 +948,7 @@ public partial class App : Application
             _tray?.Dispose();
             _server?.Dispose();
             _bleClient?.Dispose();
+            _sppClient?.Dispose();
         }
         catch (Exception ex)
         {
