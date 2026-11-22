@@ -11,6 +11,7 @@
 ```
 msgbridge/
 ├── README.md                     # 本文档
+├── publish.ps1                   # 一键发布到 C:\APP\message（Windows 端 + 安卓 APK）
 ├── android/                      # 安卓端（Android Studio 工程）
 │   ├── gradlew(.bat) / gradle/wrapper   # Gradle 9.6 wrapper
 │   └── app/src/main/
@@ -286,9 +287,19 @@ Shizuku 正好能把调用派生到 shell 身份上（它的服务端由 adb 启
 需要 [.NET SDK 8+](https://dotnet.microsoft.com/download) 和 **Windows App Runtime 1.7**（微软商店装「Windows App Runtime 1.7」或从 [aka.ms/windowsappsdk](https://aka.ms/windowsappsdk/1.7/latest/windowsappruntimeinstall-x64.exe) 安装）。
 
 ```powershell
+# 一键发布：构建 → 拷到 C:\APP\message → 修开机自启 → 清掉 bin/obj
+.\publish.ps1
+```
+
+最终产物只有一份：**`C:\APP\message\MessageBridge.exe`**（同目录还有 `Message-android.apk`）。
+不再区分 Debug / Release；`publish.ps1` 发布完会把仓库里的 `bin`、`obj` 删掉，
+所以源码目录里不会再有第二份可执行文件。
+
+只想编译检查语法时再单独用：
+
+```powershell
 cd windows
 dotnet build MessageBridge.sln -c Debug
-# 产物：windows\MessageBridge\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MessageBridge.exe
 ```
 
 > `NuGet.Config` 已配置为仅使用 nuget.org，并清除机器上可能失效的本地源/回退文件夹。
