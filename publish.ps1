@@ -56,11 +56,15 @@ if (Test-Path $apk) {
     Write-Host '==> android apk not found, skipped' -ForegroundColor Yellow
 }
 
-# resources.pri 由 NoVsAppx.targets 的 AfterBuild 钩子生成在 bin 里，
-# publish 不认识它（AddPriPayloadFilesToCopyToOutputDirectoryItems 被清空了），
-# 少了它会 XamlParseException 直接起不来。
+# resources.pri 只是索引，真正的 XAML 编译产物是同一目录下的 .xbf。
+# 两者都得跟过去，少一个窗口就 0xc000027b 崩在 Microsoft.UI.Xaml.dll。
 Copy-Item $pri.FullName (Join-Path $target 'resources.pri') -Force
-Write-Host "==> resources.pri copied ($($pri.Length) bytes)" -ForegroundColor Cyan
+$xbfDir = Split-Path -Parent $pri.FullName
+Get-ChildItem $xbfDir -Filter '*.xbf' -File | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $target $_.Name) -Force
+}
+$copiedXbf = @(Get-ChildItem $xbfDir -Filter '*.xbf' -File).Count
+Write-Host "==> resources.pri + $copiedXbf xbf copied" -ForegroundColor Cyan
 
 Write-Host '==> updating startup entry' -ForegroundColor Cyan
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Message' -Value "`"$exe`""
