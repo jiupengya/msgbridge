@@ -65,9 +65,9 @@ Write-Host "==> resources.pri copied ($($pri.Length) bytes)" -ForegroundColor Cy
 Write-Host '==> updating startup entry' -ForegroundColor Cyan
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Message' -Value "`"$exe`""
 
-Write-Host '==> removing old shortcut (app recreates it with AUMID)' -ForegroundColor Cyan
-$lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Message.lnk'
-if (Test-Path $lnk) { Remove-Item $lnk -Force }
+# 快捷方式不在这里动：它带着 AppUserModelID（Toast 靠这个身份），
+# 用 WScript.Shell 重建会弄丢；而删掉再让应用重建又可能冒出「Message (2).lnk」。
+# 应用每次启动都会自己校验 TargetPath，发现指向旧路径就原地覆盖重建，交给它即可。
 
 Write-Host '==> starting' -ForegroundColor Cyan
 Start-Process -FilePath $exe
