@@ -110,7 +110,9 @@ public sealed class SppClient : IDisposable
     public async Task<string?> RequestWifiAsync(
         ulong address, TimeSpan timeout, CancellationToken ct = default)
     {
-        if (!await ConnectAsync(address, timeout, ct).ConfigureAwait(false)) return null;
+        // 连接给 15 秒就够了；等手机执行 WiFi 切换可能要 40 秒以上，用 timeout 单独控制
+        if (!await ConnectAsync(address, TimeSpan.FromSeconds(15), ct).ConfigureAwait(false))
+            return null;
         var reply = await SendAsync("wifi", timeout, ct).ConfigureAwait(false);
         await DisconnectAsync().ConfigureAwait(false);
         return reply;

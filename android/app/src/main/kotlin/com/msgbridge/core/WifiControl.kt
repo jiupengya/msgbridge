@@ -107,23 +107,28 @@ object WifiControl {
 
         if (!st.enabled) {
             setEnabled(true)
-            waitFor(target, 10_000)?.let {
+            // 刚打开 WiFi 时 wifi 服务还在初始化，cmd wifi 常常十几秒才回，
+            // 直接轮询会误判成「还是关的」，先给它两秒起来
+            delay(2_000)
+            waitFor(target, 12_000)?.let {
                 return Result(Outcome.ENABLED, it.ssid, "已打开 WiFi 并连上 $target", elapsed())
             }
         }
 
-        // 上面没成功：关→开，重新让系统选网
+        // 关→开让系统重新选网：这条路实测最快也最可靠（十几秒就能回到目标网络）
+        Log.i(TAG, "toggle wifi")
         setEnabled(false)
         delay(1_200)
         setEnabled(true)
-        waitFor(target, 15_000)?.let {
+        waitFor(target, 18_000)?.let {
             return Result(Outcome.SWITCHED, it.ssid, "已切回 $target", elapsed())
         }
 
-        // 还是不对，用密码显式连一次
+        // 还是不对，用密码精确指定一次（比如系统一直优先连校园网）
         if (!password.isNullOrBlank()) {
+            Log.i(TAG, "connect-network -> $target")
             connect(target, password)
-            waitFor(target, 10_000)?.let {
+            waitFor(target, 12_000)?.let {
                 return Result(Outcome.CONNECTED, it.ssid, "已连接到 $target", elapsed())
             }
         }

@@ -10,21 +10,16 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import com.msgbridge.R
 import com.msgbridge.core.BridgeController
-import com.msgbridge.core.ConnectionState
 import com.msgbridge.core.Prefs
 import com.msgbridge.core.WifiControl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * 常驻前台服务：保持 TCP 长连接（参考 android-screen-off-survival 三件套）。
@@ -44,9 +39,9 @@ class BridgeService : Service() {
         private const val LEGACY_CHANNEL_ID = "bridge_service"
         private const val NOTIFICATION_ID = 1001
 
-        /** 「电脑请求连回 WiFi」的提示通知，单独的 channel 和 id，用户能看见 */
+        /** 自动切 WiFi 失败时的提醒（需手动连接），单独 channel + id，用户能看见 */
         private const val WIFI_CHANNEL_ID = "wifi_request"
-        private const val WIFI_NOTIFICATION_ID = 1002
+        private const val WIFI_FAILED_NOTIFICATION_ID = 1003
 
         const val ACTION_STOP = "com.msgbridge.action.STOP"
 
@@ -73,41 +68,6 @@ class BridgeService : Service() {
             .apply { setReferenceCounted(false) }
     }
 
-    /**
-     * 蓝牙带外通道：WiFi 断了只有它还能把「打开 WiFi」送进来。
-     * 指令执行耗时要几秒，放到 IO 线程，别卡住 GATT 回调。
-     */
-    private var bleServer: BleServer? = null
-
-    private fun startBleIfEnabled() {
-        if (!Prefs.wifiFallbackEnabled) {
-            Log.i(TAG, "wifi fallback disabled, BLE not started")
-            return
-        }
-        if (bleServer != null) return
-        if (!BleServer.hasPermissions(this)) {
-            Log.i(TAG, "bluetooth permission missing, BLE not started")
-            return
-        }
-        bleServer = BleServer(applicationContext, scope) {
-            withContext(Dispatchers.IO) {
-                // 先让用户看到一条提示，再动手
-                notifyWifiRequest()
-                try {
-                    val result = WifiControl.ensureOnTarget(
-                        Prefs.targetSsid, Prefs.targetWifiPassword
-                    )
-                    Log.i(TAG, "wifi request -> ${result.outcome} ${result.ssid} ${result.message}")
-                    if (result.ok) "ok:${result.ssid}" else "err:${result.message.take(12)}"
-                } finally {
-                    // 执行很快（WiFi 关→开通常 1~2 秒），通知多留一会儿才看得见
-                    delay(2_000)
-                    cancelWifiRequest()
-                }
-            }
-        }.also { it.start() }
-    }
-
     /** 经典蓝牙 SPP：配对后电脑可以直接连，手机不需要广播。 */
     private var sppServer: SppServer? = null
 
@@ -125,7 +85,14 @@ class BridgeService : Service() {
                         Prefs.targetSsid, Prefs.targetWifiPassword
                     )
                     Log.i(TAG, "spp wifi -> ${result.outcome} ${result.ssid} ${result.message}")
-                    if (result.ok) "ok:${result.ssid}" else "err:${result.message.take(12)}"
+                    if (result.ok) {
+                        "ok:${result.ssid}"
+                    } else {
+                        // 自动切换没成（Shizuku 没授权 / 目标网络不在范围内等），
+                        // 给用户一条能看见的通知，提示手动连一下
+                        notifyWifiFailed(Prefs.targetSsid)
+                        "err:${result.message.take(12)}"
+                    }
                 }
                 else -> "err:cmd"
             }
@@ -154,7 +121,6 @@ class BridgeService : Service() {
             wakeLock.acquire()
         }
         BridgeController.start(this)
-        startBleIfEnabled()
         startSppIfEnabled()
         Log.i(TAG, "service started, target=${Prefs.host}:${Prefs.port}")
 
@@ -169,8 +135,6 @@ class BridgeService : Service() {
 
     override fun onDestroy() {
         BridgeController.stop()
-        bleServer?.stop()
-        bleServer = null
         sppServer?.stop()
         sppServer = null
         if (wakeLock.isHeld) {
@@ -205,20 +169,24 @@ class BridgeService : Service() {
         runCatching { notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
     }
 
-    /** 电脑请求连回 WiFi 之前先提示一下，执行完就撤掉 */
-    private fun notifyWifiRequest() {
+    /**
+     * 自动切 WiFi 没成功时提示用户手动连一下。
+     * 点通知直接跳到系统的 WiFi 设置页。
+     */
+    private fun notifyWifiFailed(ssid: String) {
+        val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pending = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+
         val n = Notification.Builder(this, WIFI_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText("电脑请求连回 WiFi，正在处理…")
-            .setOngoing(true)
+            .setContentText("需手动连接 $ssid")
+            .setContentIntent(pending)
+            .setAutoCancel(true)
             .setShowWhen(false)
             .build()
-        notificationManager.notify(WIFI_NOTIFICATION_ID, n)
-    }
-
-    private fun cancelWifiRequest() {
-        notificationManager.cancel(WIFI_NOTIFICATION_ID)
+        notificationManager.notify(WIFI_FAILED_NOTIFICATION_ID, n)
     }
 
     private fun buildNotification(text: String): Notification {

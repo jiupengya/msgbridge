@@ -284,8 +284,9 @@ private fun WifiFallbackSection() {
 
     SectionCard(title = "WiFi 兜底") {
         HintText(
-            "电脑接着有线网、手机却忘了开 WiFi 或连错网络时，可以在电脑托盘菜单里" +
-                "「让手机连上 WiFi」，指令走蓝牙送到手机，再由 Shizuku 执行。"
+            "电脑接着有线网、手机却忘了开 WiFi 或连错网络时，电脑会通过已配对的蓝牙" +
+                "直接连过来，让手机切回下面的目标网络。" +
+                "第一次使用前需要在 Windows 上把手机配对一次。"
         )
         VSpace(4)
         TextField(
@@ -316,7 +317,7 @@ private fun WifiFallbackSection() {
         VSpace(4)
         SwitchRow(
             title = "启用蓝牙兜底",
-            subtitle = "开启后手机会广播 BLE 服务，等待电脑连过来",
+            subtitle = "电脑经已配对的蓝牙直接调起切换，不需要手机广播",
             checked = enabled,
             onCheckedChange = {
                 enabled = it

@@ -87,7 +87,6 @@ public partial class App : Application
     private Config _config = new();
 
     /// <summary>蓝牙带外通道（懒创建，第一次用才连设备）。</summary>
-    private BleClient? _bleClient;
     private SppClient? _sppClient;
     private bool _bleBusy;
 
@@ -199,50 +198,9 @@ public partial class App : Application
         InitializeComponent();
     }
 
-    /// <summary>
-    /// 诊断入口：`MessageBridge.exe --ble-test` 只跑一次蓝牙通道并把过程写进
-    /// ble-test.log，然后退出。用来在没人点托盘的时候验证 BLE 链路是否通。
-    /// </summary>
-    private async void RunBleSelfTest()
-    {
-        var log = new System.Text.StringBuilder();
-        try
-        {
-            log.AppendLine($"ethernet: {NetworkInfo.IsOnEthernet()} / {NetworkInfo.DescribeEthernet()}");
-            using var ble = new BleClient();
-            ble.Log += line => log.AppendLine(line);
-            log.AppendLine("scan+connect+ping ...");
-            log.AppendLine("ping: " + await ble.PingAsync(TimeSpan.FromSeconds(20)));
-            log.AppendLine("requesting wifi ...");
-            var reply = await ble.RequestWifiAsync(TimeSpan.FromSeconds(45));
-            log.AppendLine("wifi reply: " + reply);
-        }
-        catch (Exception ex)
-        {
-            log.AppendLine("error: " + ex);
-        }
-
-        try
-        {
-            File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "ble-test.log"), log.ToString());
-        }
-        catch
-        {
-            // 忽略
-        }
-
-        Exit();
-    }
-
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         Ui = DispatcherQueue.GetForCurrentThread();
-
-        if (Environment.GetCommandLineArgs().Contains("--ble-test"))
-        {
-            RunBleSelfTest();
-            return;
-        }
 
         if (Environment.GetCommandLineArgs().Contains("--spp-test"))
         {
@@ -742,7 +700,7 @@ public partial class App : Application
         {
             var address = ParseMac(_config.PhoneBluetoothMac);
             // 不弹电脑通知：这条链路是「悄悄把网修好」，只在日志里留痕
-            var reply = await GetSppClient().RequestWifiAsync(address, TimeSpan.FromSeconds(30));
+            var reply = await GetSppClient().RequestWifiAsync(address, TimeSpan.FromSeconds(60));
             if (reply == null)
             {
                 LogAutoWifi("SPP 连不上手机，跳过");
@@ -793,7 +751,7 @@ public partial class App : Application
         try
         {
             var address = ParseMac(_config.PhoneBluetoothMac);
-            var reply = await GetSppClient().RequestWifiAsync(address, TimeSpan.FromSeconds(30));
+            var reply = await GetSppClient().RequestWifiAsync(address, TimeSpan.FromSeconds(60));
             if (reply == null)
             {
                 _tray?.ShowBalloon("手机 WiFi", "蓝牙连不上手机，确认手机开着蓝牙且推送服务在运行。");
@@ -947,7 +905,6 @@ public partial class App : Application
             _mainWindow?.Close();
             _tray?.Dispose();
             _server?.Dispose();
-            _bleClient?.Dispose();
             _sppClient?.Dispose();
         }
         catch (Exception ex)
